@@ -16,8 +16,10 @@ def detect_registry(image_name: str) -> str:
     registry_host = first_segment.split(":", 1)[0]
     if registry_host == "ghcr.io":
         return "ghcr"
-    # docker.io prefix is sometimes explicit but usually omitted
-    if "/" not in image_name or image_name.startswith("docker.io/"):
+    if registry_host == "docker.io":
+        return "dockerhub"
+    # No explicit registry prefix — simple or namespaced DockerHub images
+    if "/" not in image_name:
         return "dockerhub"
     # Two-part names like "linuxserver/sonarr" are DockerHub namespaced images
     parts = image_name.split("/")
