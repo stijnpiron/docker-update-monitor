@@ -10,7 +10,7 @@ This project has a virtual environment at `.venv/`. Always use it:
 
 ```bash
 .venv/bin/python -m pytest tests/       # run tests
-.venv/bin/python monitor.py             # run the monitor
+.venv/bin/python -m app.main            # run the monitor
 ```
 
 Do NOT use `python`, `python3`, or `pip install` directly. The venv has all dependencies already installed.

@@ -2,7 +2,7 @@
 
 import pytest
 
-from monitor import detect_registry
+from app.registry.base import detect_registry
 
 
 class TestDetectRegistryDockerHub:

@@ -1,11 +1,7 @@
 """Unit tests for find_updates() — 2-group, 3-group, 4+ group, and edge cases."""
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import pytest
-from monitor import find_updates
+from app.version import find_updates
 
 
 class TestTwoGroupVersions:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from monitor import parse_tag
+from app.version import parse_tag
 
 
 class TestParseTagValidSemver:

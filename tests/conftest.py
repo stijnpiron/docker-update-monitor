@@ -4,7 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import monitor
+from app import http as http_mod
+from app import main as main_mod
 
 
 @pytest.fixture
@@ -32,14 +33,14 @@ def mock_container():
 
 @pytest.fixture
 def mock_http_session():
-    """Patch monitor.http_session and return the mock."""
-    with patch.object(monitor, "http_session") as mock_session:
+    """Patch app.http.http_session and return the mock."""
+    with patch.object(http_mod, "http_session") as mock_session:
         yield mock_session
 
 
 @pytest.fixture(autouse=True)
 def reset_shutdown_flag():
     """Ensure shutdown_requested is reset between tests."""
-    monitor.shutdown_requested = False
+    main_mod.shutdown_requested = False
     yield
-    monitor.shutdown_requested = False
+    main_mod.shutdown_requested = False
