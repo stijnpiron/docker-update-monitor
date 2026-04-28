@@ -28,7 +28,7 @@ jobs:
           TOTAL=$(python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
           # Extract only the coverage summary table
-          sed -n '/^Name.*Stmts/,/^====/p' coverage-output.txt | head -n -1 > coverage-summary.txt
+          sed -n '/^Name.*Stmts/,/^====/p' coverage-output.txt | head -n -1 | grep -v "^Coverage JSON" > coverage-summary.txt
 
       - name: Generate coverage report comment
         id: report
