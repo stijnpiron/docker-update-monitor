@@ -42,9 +42,9 @@ jobs:
       matrix:
         include:
         - language: actions
-          build-mode: autobuild
+          build-mode: none
         - language: python
-          build-mode: autobuild
+          build-mode: none
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
