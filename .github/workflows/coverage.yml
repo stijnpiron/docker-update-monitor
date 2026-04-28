@@ -1,0 +1,67 @@
+name: Coverage Report
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        id: coverage
+        run: |
+          python -m pytest tests/ --cov --cov-report=term --cov-report=json --cov-fail-under=0 > coverage-output.txt 2>&1 || true
+          TOTAL=$(python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          # Extract only the coverage summary table
+          sed -n '/^Name.*Stmts/,/^====/p' coverage-output.txt | head -n -1 | grep -v "^Coverage JSON" > coverage-summary.txt
+
+      - name: Generate coverage report comment
+        id: report
+        run: |
+          TOTAL="${{ steps.coverage.outputs.total }}"
+          if [ "${TOTAL%.*}" -ge 80 ]; then
+            STATUS="✅ **Pass** — coverage is at ${TOTAL}% (threshold: 80%)"
+          else
+            STATUS="❌ **Fail** — coverage is at ${TOTAL}% (threshold: 80%)"
+          fi
+
+          {
+            echo "body<<EOF"
+            echo "## Coverage Report"
+            echo ""
+            echo "${STATUS}"
+            echo ""
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post coverage comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          message: ${{ steps.report.outputs.body }}
+
+      - name: Enforce 80% threshold
+        run: |
+          TOTAL="${{ steps.coverage.outputs.total }}"
+          if [ "${TOTAL%.*}" -lt 80 ]; then
+            echo "::error::Coverage ${TOTAL}% is below the 80% threshold"
+            exit 1
+          fi
