@@ -2,11 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
-import monitor
+from app import config as config_mod
+from app import http as http_mod
+from app.models import UpdateInfo
+from app.notifications.webhook import notify
 
 
 def _make_update():
-    return monitor.UpdateInfo(
+    return UpdateInfo(
         container_name="test",
         stack="stack",
         image="nginx",
@@ -19,35 +22,35 @@ def _make_update():
 class TestWebhookAuthBearer:
     """Bearer token authentication."""
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_bearer_auth_sends_authorization_header(self, mock_session):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", "bearer"), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", "my-secret-token"):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "bearer"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", "my-secret-token"):
+            notify([_make_update()])
 
         call_kwargs = mock_session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
         assert headers["Authorization"] == "Bearer my-secret-token"
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_bearer_auth_case_insensitive(self, mock_session):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", "bearer"), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", "xyz"):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "bearer"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", "xyz"):
+            notify([_make_update()])
 
         call_kwargs = mock_session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
@@ -57,18 +60,18 @@ class TestWebhookAuthBearer:
 class TestWebhookAuthBasic:
     """Basic authentication."""
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_basic_auth_sends_authorization_header(self, mock_session):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", "basic"), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", "dXNlcjpwYXNz"):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "basic"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", "dXNlcjpwYXNz"):
+            notify([_make_update()])
 
         call_kwargs = mock_session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
@@ -78,35 +81,35 @@ class TestWebhookAuthBasic:
 class TestWebhookAuthNone:
     """No authentication (backward compatible)."""
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_no_auth_type_sends_no_authorization_header(self, mock_session):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", ""), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", ""):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
+            notify([_make_update()])
 
         call_kwargs = mock_session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
         assert "Authorization" not in headers
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_auth_type_without_token_sends_no_authorization_header(self, mock_session):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", "bearer"), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", ""):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "bearer"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
+            notify([_make_update()])
 
         call_kwargs = mock_session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
@@ -116,18 +119,18 @@ class TestWebhookAuthNone:
 class TestWebhookAuthInvalid:
     """Invalid auth type logs warning but still sends."""
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_invalid_auth_type_logs_warning_and_sends(self, mock_session, caplog):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", "oauth2"), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", "some-token"):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "oauth2"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", "some-token"):
+            notify([_make_update()])
 
         # Should still send the request
         mock_session.post.assert_called_once()
@@ -142,7 +145,7 @@ class TestWebhookAuthInvalid:
 class TestTokenNotLogged:
     """Token value must not appear in log output."""
 
-    @patch.object(monitor, "http_session")
+    @patch.object(http_mod, "http_session")
     def test_token_not_in_logs(self, mock_session, caplog):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -151,10 +154,10 @@ class TestTokenNotLogged:
 
         secret = "super-secret-token-value-12345"
 
-        with patch.object(monitor, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(monitor, "DRY_RUN", False), \
-             patch.object(monitor, "NOTIFY_AUTH_TYPE", "bearer"), \
-             patch.object(monitor, "NOTIFY_AUTH_TOKEN", secret):
-            monitor.notify([_make_update()])
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "bearer"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", secret):
+            notify([_make_update()])
 
         assert secret not in caplog.text

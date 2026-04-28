@@ -5,27 +5,27 @@ import subprocess
 import sys
 import time
 
-import monitor
+from app import main as main_mod
 
 
 class TestSignalHandler:
     """Unit tests: signal handler sets the shutdown flag."""
 
     def setup_method(self):
-        monitor.shutdown_requested = False
+        main_mod.shutdown_requested = False
 
     def teardown_method(self):
-        monitor.shutdown_requested = False
+        main_mod.shutdown_requested = False
 
     def test_handle_signal_sets_flag(self):
-        assert monitor.shutdown_requested is False
-        monitor._handle_signal(signal.SIGTERM, None)
-        assert monitor.shutdown_requested is True
+        assert main_mod.shutdown_requested is False
+        main_mod._handle_signal(signal.SIGTERM, None)
+        assert main_mod.shutdown_requested is True
 
     def test_handle_signal_sigint_sets_flag(self):
-        assert monitor.shutdown_requested is False
-        monitor._handle_signal(signal.SIGINT, None)
-        assert monitor.shutdown_requested is True
+        assert main_mod.shutdown_requested is False
+        main_mod._handle_signal(signal.SIGINT, None)
+        assert main_mod.shutdown_requested is True
 
 
 class TestGracefulShutdownIntegration:
@@ -39,8 +39,8 @@ import sys, os
 os.environ["RUN_ON_STARTUP"] = "false"
 os.environ["CRON_SCHEDULE"] = "* * * * *"
 os.environ["DRY_RUN"] = "true"
-import monitor
-monitor.main()
+from app.main import main
+main()
 """],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
