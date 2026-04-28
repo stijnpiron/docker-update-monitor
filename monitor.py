@@ -37,6 +37,8 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import docker
 from croniter import croniter
 from datetime import datetime, timezone
@@ -62,6 +64,32 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 log = logging.getLogger("dum")
+
+
+# ---------------------------------------------------------------------------
+# HTTP session with retry & backoff
+# ---------------------------------------------------------------------------
+
+def create_http_session() -> requests.Session:
+    """Create a requests.Session with connection pooling and retry logic.
+
+    Retries up to 3 times on 429/5xx with exponential backoff and
+    respects the Retry-After header on HTTP 429 responses.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+http_session = create_http_session()
 
 # ---------------------------------------------------------------------------
 # Graceful shutdown
@@ -127,7 +155,7 @@ def get_dockerhub_token(username: str, password: str) -> Optional[str]:
         log.info("DockerHub: no credentials — using anonymous access (rate-limited).")
         return None
     try:
-        resp = requests.post(
+        resp = http_session.post(
             "https://hub.docker.com/v2/users/login",
             json={"username": username, "password": password},
             timeout=15,
@@ -160,7 +188,7 @@ def _fetch_dockerhub_tags(image_name: str, token: Optional[str], current_tag: Op
 
     while url:
         try:
-            resp = requests.get(url, headers=headers, timeout=20)
+            resp = http_session.get(url, headers=headers, timeout=20)
             resp.raise_for_status()
             data = resp.json()
             page_tags = [t["name"] for t in data.get("results", [])]
@@ -188,7 +216,7 @@ def _get_ghcr_token(owner: str, repo: str, github_token: str) -> Optional[str]:
     # GHCR uses the standard OCI token endpoint
     auth = base64.b64encode(f"token:{github_token}".encode()).decode()
     try:
-        resp = requests.get(
+        resp = http_session.get(
             f"https://ghcr.io/token?service=ghcr.io&scope=repository:{owner}/{repo}:pull",
             headers={"Authorization": f"Basic {auth}"},
             timeout=15,
@@ -230,7 +258,7 @@ def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
 
     while url:
         try:
-            resp = requests.get(url, headers=headers, timeout=20)
+            resp = http_session.get(url, headers=headers, timeout=20)
             resp.raise_for_status()
             data = resp.json()
             tags.extend(data.get("tags") or [])
@@ -387,7 +415,7 @@ def notify(updates: list[UpdateInfo]) -> None:
         return
 
     try:
-        resp = requests.post(
+        resp = http_session.post(
             NOTIFY_ENDPOINT,
             json=payload,
             headers={"Content-Type": "application/json"},
