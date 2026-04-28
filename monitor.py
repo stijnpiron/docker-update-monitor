@@ -121,8 +121,13 @@ def get_dockerhub_token(username: str, password: str) -> Optional[str]:
         return None
 
 
-def _fetch_dockerhub_tags(image_name: str, token: Optional[str]) -> list[str]:
-    """Fetch all tags from Docker Hub using the Hub v2 API."""
+def _fetch_dockerhub_tags(image_name: str, token: Optional[str], current_tag: Optional[str] = None) -> list[str]:
+    """Fetch tags from Docker Hub using the Hub v2 API.
+
+    Docker Hub returns tags ordered by last_updated descending (newest first).
+    When *current_tag* is given we stop paginating once the current tag appears
+    on a page, because all subsequent pages contain only older entries.
+    """
     # Strip explicit docker.io/ prefix if present
     name = image_name.removeprefix("docker.io/")
     parts = name.split("/")
@@ -131,14 +136,21 @@ def _fetch_dockerhub_tags(image_name: str, token: Optional[str]) -> list[str]:
 
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     tags: list[str] = []
-    url = f"https://hub.docker.com/v2/namespaces/{namespace}/repositories/{repo}/tags?page_size=100"
+    url = f"https://hub.docker.com/v2/namespaces/{namespace}/repositories/{repo}/tags?page_size=100&ordering=last_updated"
 
     while url:
         try:
             resp = requests.get(url, headers=headers, timeout=20)
             resp.raise_for_status()
             data = resp.json()
-            tags.extend(t["name"] for t in data.get("results", []))
+            page_tags = [t["name"] for t in data.get("results", [])]
+            tags.extend(page_tags)
+
+            # Early stop: current tag found on this page → older pages not needed
+            if current_tag and current_tag in page_tags:
+                log.debug(f"DockerHub: found current tag '{current_tag}' — stopping pagination")
+                break
+
             url = data.get("next")
         except requests.HTTPError as exc:
             log.error(f"DockerHub HTTP error for {namespace}/{repo}: {exc}")
@@ -222,12 +234,13 @@ def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
     return tags
 
 
-def fetch_all_tags(image_name: str, dockerhub_token: Optional[str], github_token: str) -> list[str]:
+def fetch_all_tags(image_name: str, dockerhub_token: Optional[str], github_token: str,
+                   current_tag: Optional[str] = None) -> list[str]:
     """Route to the correct registry fetcher based on the image name."""
     registry = detect_registry(image_name)
 
     if registry == "dockerhub":
-        tags = _fetch_dockerhub_tags(image_name, dockerhub_token)
+        tags = _fetch_dockerhub_tags(image_name, dockerhub_token, current_tag)
         log.info(f"  Fetched {len(tags):4d} tags  ←  DockerHub  {image_name}")
     elif registry == "ghcr":
         tags = _fetch_ghcr_tags(image_name, github_token)
@@ -372,8 +385,10 @@ def run_check() -> None:
     containers = client.containers.list()
     log.info(f"Running containers: {len(containers)}")
 
-    # Cache tag lists — one fetch per unique image, shared across containers
-    tags_cache: dict[str, list[str]] = {}
+    # Cache tag lists — keyed by (image_name, current_tag) so that the
+    # DockerHub early-stop optimisation doesn't miss tags when two containers
+    # run different versions of the same image.
+    tags_cache: dict[tuple[str, str], list[str]] = {}
     all_updates: list[UpdateInfo] = []
 
     for container in containers:
@@ -413,11 +428,12 @@ def run_check() -> None:
 
         log.info(f"  [{container.name}]  image={image_name}:{current_tag}  stack={stack}")
 
-        # Fetch tags once per unique image name
-        if image_name not in tags_cache:
-            tags_cache[image_name] = fetch_all_tags(image_name, token, GITHUB_TOKEN)
+        # Fetch tags once per unique (image, tag) combination
+        cache_key = (image_name, current_tag)
+        if cache_key not in tags_cache:
+            tags_cache[cache_key] = fetch_all_tags(image_name, token, GITHUB_TOKEN, current_tag)
 
-        all_tags = tags_cache[image_name]
+        all_tags = tags_cache[cache_key]
         if not all_tags:
             log.warning(f"    No tags returned for {image_name} — skipping")
             continue
