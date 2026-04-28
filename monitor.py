@@ -4,21 +4,23 @@ Docker Update Monitor
 Monitors running containers for available image updates and notifies a webhook endpoint.
 
 Label schema (add to your containers):
-  docker-update-monitor.tag-regex   Required. Regex with capture groups for version parts.
+  update-monitor.tag-regex   Required. Regex with capture groups for version parts.
                              E.g.  ^v?(\\d+)\\.(\\d+)\\.(\\d+)$  for semantic versioning.
                              The groups must be comparable as integers (major, minor, patch).
-  docker-update-monitor.stack       Optional. Override stack name (auto-detected from Compose otherwise).
+  update-monitor.stack       Optional. Override stack name (auto-detected from Compose otherwise).
 
 Environment variables:
   NOTIFY_ENDPOINT            Webhook URL to POST update payloads to.
   DOCKERHUB_USERNAME         Docker Hub username.
   DOCKERHUB_PASSWORD         Docker Hub password OR a Personal Access Token (PAT).
                              PATs are preferred — create one at hub.docker.com → Account Settings → Personal access tokens.
+  GITHUB_TOKEN               GitHub PAT with read:packages scope — required for ghcr.io images.
+                             Generate one at: https://github.com/settings/tokens
   CRON_SCHEDULE              Cron expression for check schedule (default: "0 * * * *" = every hour).
                              Supports standard 5-field cron: minute hour day month weekday.
                              Examples: "0 */6 * * *" (every 6h), "0 8 * * *" (daily at 08:00).
   LOG_LEVEL                  Logging level (default: INFO).
-  LABEL_PREFIX               Label namespace (default: docker-update-monitor).
+  LABEL_PREFIX               Label namespace (default: update-monitor).
   DRY_RUN                    Set to "true" to log updates without POSTing.
 """
 
@@ -44,8 +46,9 @@ from docker.errors import DockerException
 NOTIFY_ENDPOINT   = os.environ.get("NOTIFY_ENDPOINT", "")
 DOCKERHUB_USER    = os.environ.get("DOCKERHUB_USERNAME", "")
 DOCKERHUB_PASS    = os.environ.get("DOCKERHUB_PASSWORD", "")
+GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
 CRON_SCHEDULE     = os.environ.get("CRON_SCHEDULE", "0 * * * *")
-LABEL_PREFIX      = os.environ.get("LABEL_PREFIX", "docker-update-monitor")
+LABEL_PREFIX      = os.environ.get("LABEL_PREFIX", "update-monitor")
 DRY_RUN           = os.environ.get("DRY_RUN", "false").lower() == "true"
 LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -75,6 +78,24 @@ class UpdateInfo:
 # Docker Hub helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Registry helpers
+# ---------------------------------------------------------------------------
+
+def detect_registry(image_name: str) -> str:
+    """Return 'ghcr' | 'dockerhub' | 'unknown' based on the image name prefix."""
+    if image_name.startswith("ghcr.io/"):
+        return "ghcr"
+    # docker.io prefix is sometimes explicit but usually omitted
+    if "/" not in image_name or image_name.startswith("docker.io/"):
+        return "dockerhub"
+    # Two-part names like "linuxserver/sonarr" are DockerHub namespaced images
+    parts = image_name.split("/")
+    if len(parts) == 2 and "." not in parts[0]:
+        return "dockerhub"
+    return "unknown"
+
+
 def get_dockerhub_token(username: str, password: str) -> Optional[str]:
     """
     Exchange DockerHub credentials for a JWT token.
@@ -83,7 +104,7 @@ def get_dockerhub_token(username: str, password: str) -> Optional[str]:
     https://app.docker.com/settings/personal-access-tokens
     """
     if not username or not password:
-        log.info("No DockerHub credentials provided; anonymous access (rate-limited).")
+        log.info("DockerHub: no credentials — using anonymous access (rate-limited).")
         return None
     try:
         resp = requests.post(
@@ -100,26 +121,16 @@ def get_dockerhub_token(username: str, password: str) -> Optional[str]:
         return None
 
 
-def fetch_all_tags(image_name: str, token: Optional[str]) -> list[str]:
-    """
-    Fetch ALL tags for an image from Docker Hub in one paginated sweep,
-    using the current /v2/namespaces/{namespace}/repositories/{repo}/tags API.
-    image_name should be bare (no tag), e.g. "library/nginx" or "linuxserver/sonarr".
-    Returns an empty list for non-DockerHub images.
-    """
-    # Resolve namespace/name
-    parts = image_name.split("/")
-    if len(parts) == 1:
-        namespace, repo = "library", parts[0]
-    elif len(parts) == 2:
-        namespace, repo = parts
-    else:
-        log.debug(f"Skipping non-DockerHub image: {image_name}")
-        return []
+def _fetch_dockerhub_tags(image_name: str, token: Optional[str]) -> list[str]:
+    """Fetch all tags from Docker Hub using the Hub v2 API."""
+    # Strip explicit docker.io/ prefix if present
+    name = image_name.removeprefix("docker.io/")
+    parts = name.split("/")
+    namespace = "library" if len(parts) == 1 else parts[0]
+    repo = parts[-1]
 
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     tags: list[str] = []
-    # New Hub API path (replaces the legacy /v2/repositories/… route)
     url = f"https://hub.docker.com/v2/namespaces/{namespace}/repositories/{repo}/tags?page_size=100"
 
     while url:
@@ -128,15 +139,104 @@ def fetch_all_tags(image_name: str, token: Optional[str]) -> list[str]:
             resp.raise_for_status()
             data = resp.json()
             tags.extend(t["name"] for t in data.get("results", []))
-            url = data.get("next")  # None when last page reached
+            url = data.get("next")
         except requests.HTTPError as exc:
-            log.error(f"HTTP error fetching tags for {namespace}/{repo}: {exc}")
+            log.error(f"DockerHub HTTP error for {namespace}/{repo}: {exc}")
             break
         except Exception as exc:
-            log.error(f"Error fetching tags for {namespace}/{repo}: {exc}")
+            log.error(f"DockerHub error for {namespace}/{repo}: {exc}")
             break
 
-    log.info(f"  Fetched {len(tags):4d} tags  ←  {namespace}/{repo}")
+    return tags
+
+
+def _get_ghcr_token(owner: str, repo: str, github_token: str) -> Optional[str]:
+    """Exchange a GitHub PAT for a short-lived GHCR pull token."""
+    import base64
+    # GHCR uses the standard OCI token endpoint
+    auth = base64.b64encode(f"token:{github_token}".encode()).decode()
+    try:
+        resp = requests.get(
+            f"https://ghcr.io/token?service=ghcr.io&scope=repository:{owner}/{repo}:pull",
+            headers={"Authorization": f"Basic {auth}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("token")
+    except Exception as exc:
+        log.warning(f"GHCR token exchange failed for {owner}/{repo}: {exc}")
+        return None
+
+
+def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
+    """
+    Fetch all tags from GitHub Container Registry using the OCI v2 API.
+    image_name should include the ghcr.io/ prefix, e.g. ghcr.io/owner/repo.
+    Pagination follows the Link: <url>; rel="next" header.
+    """
+    # Strip ghcr.io/ → owner/repo (may be owner/repo or owner/group/repo)
+    path = image_name.removeprefix("ghcr.io/")
+    parts = path.split("/")
+    if len(parts) < 2:
+        log.warning(f"GHCR: cannot parse owner/repo from '{image_name}'")
+        return []
+    owner = parts[0]
+    repo = "/".join(parts[1:])
+
+    if not github_token:
+        log.warning(f"GHCR: no GITHUB_TOKEN set — cannot fetch tags for {image_name}. "
+                    "Set GITHUB_TOKEN with read:packages scope.")
+        return []
+
+    pull_token = _get_ghcr_token(owner, repo, github_token)
+    if not pull_token:
+        return []
+
+    headers = {"Authorization": f"Bearer {pull_token}"}
+    tags: list[str] = []
+    url = f"https://ghcr.io/v2/{owner}/{repo}/tags/list?n=100"
+
+    while url:
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            tags.extend(data.get("tags") or [])
+
+            # OCI pagination uses the Link header, not a next field in the body
+            link = resp.headers.get("Link", "")
+            next_url = None
+            for part in link.split(","):
+                part = part.strip()
+                if 'rel="next"' in part:
+                    next_url = part.split(";")[0].strip().strip("<>")
+                    break
+            url = next_url
+        except requests.HTTPError as exc:
+            log.error(f"GHCR HTTP error for {owner}/{repo}: {exc}")
+            break
+        except Exception as exc:
+            log.error(f"GHCR error for {owner}/{repo}: {exc}")
+            break
+
+    return tags
+
+
+def fetch_all_tags(image_name: str, dockerhub_token: Optional[str], github_token: str) -> list[str]:
+    """Route to the correct registry fetcher based on the image name."""
+    registry = detect_registry(image_name)
+
+    if registry == "dockerhub":
+        tags = _fetch_dockerhub_tags(image_name, dockerhub_token)
+        log.info(f"  Fetched {len(tags):4d} tags  ←  DockerHub  {image_name}")
+    elif registry == "ghcr":
+        tags = _fetch_ghcr_tags(image_name, github_token)
+        log.info(f"  Fetched {len(tags):4d} tags  ←  GHCR       {image_name}")
+    else:
+        log.warning(f"  Unsupported registry for '{image_name}' — skipping. "
+                    "Only DockerHub and ghcr.io are supported.")
+        tags = []
+
     return tags
 
 
@@ -152,6 +252,8 @@ def parse_tag(tag: str, pattern: str) -> Optional[tuple[int, ...]]:
     m = re.fullmatch(pattern, tag)
     if not m:
         return None
+    if not m.groups():
+        raise ValueError(f"Pattern '{pattern}' matched '{tag}' but has no capture groups — wrap each version number in ()")
     try:
         return tuple(int(g) for g in m.groups())
     except (ValueError, TypeError):
@@ -175,9 +277,16 @@ def find_updates(
     Only the *best* (highest) candidate per level is returned, so you'll
     never get spammed with every intermediate version.
     """
-    current = parse_tag(current_tag, pattern)
-    if current is None or len(current) < 3:
-        log.warning(f"    Cannot parse current tag '{current_tag}' with pattern '{pattern}'")
+    try:
+        current = parse_tag(current_tag, pattern)
+    except ValueError as exc:
+        log.warning(f"    {exc}")
+        return {}
+    if current is None:
+        log.warning(f"    Pattern '{pattern}' did not match current tag '{current_tag}'")
+        return {}
+    if len(current) < 3:
+        log.warning(f"    Pattern '{pattern}' needs at least 3 capture groups (major, minor, patch), got {len(current)}")
         return {}
 
     cur_maj, cur_min, cur_pat = current[0], current[1], current[2]
@@ -255,6 +364,10 @@ def run_check() -> None:
         return
 
     token = get_dockerhub_token(DOCKERHUB_USER, DOCKERHUB_PASS)
+    if GITHUB_TOKEN:
+        log.info("GitHub token present — ghcr.io images will be checked.")
+    else:
+        log.info("No GITHUB_TOKEN set — ghcr.io images will be skipped.")
 
     containers = client.containers.list()
     log.info(f"Running containers: {len(containers)}")
@@ -302,7 +415,7 @@ def run_check() -> None:
 
         # Fetch tags once per unique image name
         if image_name not in tags_cache:
-            tags_cache[image_name] = fetch_all_tags(image_name, token)
+            tags_cache[image_name] = fetch_all_tags(image_name, token, GITHUB_TOKEN)
 
         all_tags = tags_cache[image_name]
         if not all_tags:
