@@ -1,5 +1,17 @@
+from urllib.parse import urlparse
+
 def detect_registry(image_name: str) -> str:
     """Return 'ghcr' | 'dockerhub' | 'unknown' based on the image name prefix."""
+    # If this looks like a URL, parse and validate by hostname instead of string prefix.
+    if "://" in image_name:
+        parsed = urlparse(image_name)
+        host = parsed.hostname
+        if host == "ghcr.io":
+            return "ghcr"
+        if host == "docker.io":
+            return "dockerhub"
+        return "unknown"
+
     first_segment = image_name.split("/", 1)[0].lower()
     registry_host = first_segment.split(":", 1)[0]
     if registry_host == "ghcr.io":
