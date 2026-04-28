@@ -15,6 +15,10 @@ services:
       DOCKERHUB_USERNAME: "${DOCKERHUB_USERNAME}"
       DOCKERHUB_PASSWORD: "${DOCKERHUB_PASSWORD}" # password or PAT
 
+      # GitHub PAT with read:packages scope — required for ghcr.io images.
+      # Generate one at: https://github.com/settings/tokens
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+
       # Cron schedule for checks (default: every hour on the hour)
       # Standard 5-field cron: minute hour day month weekday
       # Examples:
@@ -22,7 +26,7 @@ services:
       #   "0 */6 * * *"  — every 6 hours
       #   "0 8 * * *"    — daily at 08:00
       #   "0 3 * * 7"    — every Sunday at 03:00
-      CRON_SCHEDULE: "0 3 * * 7"
+      CRON_SCHEDULE: "${CRON_SCHEDULE:-0 3 * * 7}"
 
       # Set to "true" to log updates without POSTing — useful for testing
       DRY_RUN: "false"
