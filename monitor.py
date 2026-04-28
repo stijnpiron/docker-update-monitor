@@ -414,6 +414,11 @@ def run_check() -> None:
         # Split into name + tag
         # Handle registry prefixes: registry.example.com:5000/ns/image:tag
         # Strategy: split on the last colon that follows a slash (or the only colon if no slashes after it)
+
+        # Strip digest suffix if present
+        if "@" in image_ref:
+            image_ref = image_ref.split("@")[0]
+
         if ":" in image_ref.split("/")[-1]:
             image_name, current_tag = image_ref.rsplit(":", 1)
         else:
