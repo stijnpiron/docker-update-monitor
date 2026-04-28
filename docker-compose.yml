@@ -1,5 +1,5 @@
+name: docker-update-monitor
 services:
-
   docker-update-monitor:
     image: ghcr.io/stijnpiron/docker-update-monitor:latest
     container_name: docker-update-monitor
@@ -13,7 +13,7 @@ services:
       # Preferred: use a Personal Access Token (PAT) as the password.
       # Generate one at: https://app.docker.com/settings/personal-access-tokens
       DOCKERHUB_USERNAME: "${DOCKERHUB_USERNAME}"
-      DOCKERHUB_PASSWORD: "${DOCKERHUB_PASSWORD}"   # password or PAT
+      DOCKERHUB_PASSWORD: "${DOCKERHUB_PASSWORD}" # password or PAT
 
       # Cron schedule for checks (default: every hour on the hour)
       # Standard 5-field cron: minute hour day month weekday
@@ -21,14 +21,16 @@ services:
       #   "0 * * * *"    — every hour
       #   "0 */6 * * *"  — every 6 hours
       #   "0 8 * * *"    — daily at 08:00
-      #   "0 8 * * 1"    — every Monday at 08:00
-      CRON_SCHEDULE: "*/1 * * * *"
+      #   "0 3 * * 7"    — every Sunday at 03:00
+      CRON_SCHEDULE: "0 3 * * 7"
 
       # Set to "true" to log updates without POSTing — useful for testing
       DRY_RUN: "false"
 
-      # Label namespace (default: update-monitor)
-      # LABEL_PREFIX: "update-monitor"
+      # Label namespace (default: docker-update-monitor)
+      # LABEL_PREFIX: "docker-update-monitor"
+      # Only docker containers with docker-update-monitor.tag-regex are monitored
+      # Example: "docker-update-monitor.tag-regex=^v?\\d+\\.\\
 
       # Log verbosity: DEBUG | INFO | WARNING | ERROR
       LOG_LEVEL: "INFO"

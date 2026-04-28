@@ -6,7 +6,7 @@ payload to a webhook when updates are found.
 ## How it works
 
 1. Reads all running containers from the Docker socket.
-2. For each container that has the `update-monitor.tag-regex` label, it:
+2. For each container that has the `docker-update-monitor.tag-regex` label, it:
    - Determines the current image tag.
    - Fetches **all** available tags from Docker Hub in a single paginated sweep
      (tags are cached per image, so multiple containers sharing the same image
@@ -49,15 +49,15 @@ services:
     image: linuxserver/sonarr:4.0.2.1183
     labels:
       # Required — regex with capture groups for (major, minor, patch)
-      update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)$"
+      docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)$"
 
       # Optional — overrides auto-detected Compose project name
-      # update-monitor.stack: "media"
+      # docker-update-monitor.stack: "media"
 
   nginx:
     image: nginx:1.25.3
     labels:
-      update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
+      docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
 
   # Containers WITHOUT the label are silently ignored
   redis:
