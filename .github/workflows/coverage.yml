@@ -24,9 +24,11 @@ jobs:
       - name: Run tests with coverage
         id: coverage
         run: |
-          python -m pytest tests/ --cov --cov-report=term-missing --cov-report=json --cov-fail-under=0 | tee coverage-output.txt
+          python -m pytest tests/ --cov --cov-report=term --cov-report=json --cov-fail-under=0 > coverage-output.txt 2>&1 || true
           TOTAL=$(python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          # Extract only the coverage summary table
+          sed -n '/^Name.*Stmts/,/^====/p' coverage-output.txt | head -n -1 > coverage-summary.txt
 
       - name: Generate coverage report comment
         id: report
@@ -44,14 +46,9 @@ jobs:
             echo ""
             echo "${STATUS}"
             echo ""
-            echo "<details>"
-            echo "<summary>Full report</summary>"
-            echo ""
             echo '```'
-            cat coverage-output.txt
+            cat coverage-summary.txt
             echo '```'
-            echo ""
-            echo "</details>"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
