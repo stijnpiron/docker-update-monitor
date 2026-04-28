@@ -170,3 +170,73 @@ stat -c '%g' /var/run/docker.sock
 - **ntfy.sh**: `NOTIFY_ENDPOINT=https://ntfy.sh/your-topic` — ntfy accepts
   plain JSON as the message body out of the box.
 - **Apprise / Gotify**: wrap in a small n8n flow or a tiny FastAPI receiver.
+
+---
+
+## Development
+
+### Prerequisites
+
+- Python 3.13+
+- Docker (only for running the monitor itself, not needed for tests)
+
+### Setup
+
+```bash
+# Clone the repo
+git clone https://github.com/stijnpiron/docker-update-monitor.git
+cd docker-update-monitor
+
+# Create a virtual environment and install all dependencies (app + dev/test)
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+```
+
+`requirements-dev.txt` includes the runtime dependencies from `requirements.txt`
+plus test tooling (`pytest`, `pytest-cov`). The Docker image only installs
+`requirements.txt` to keep the production image lean.
+
+### Running tests
+
+```bash
+# Run all tests with verbose output
+.venv/bin/python -m pytest tests/ -v
+
+# Run with coverage report
+.venv/bin/python -m pytest tests/ --cov
+```
+
+All tests run without a Docker daemon — Docker calls are mocked.
+
+### Running the monitor locally
+
+```bash
+# Set required env vars (or create a .env file)
+export DRY_RUN=true
+export RUN_ON_STARTUP=true
+
+.venv/bin/python monitor.py
+```
+
+### Project structure
+
+```
+monitor.py              # Main application
+requirements.txt        # Runtime dependencies (used in Docker image)
+requirements-dev.txt    # Dev/test dependencies (includes requirements.txt)
+pyproject.toml          # pytest & coverage configuration
+Dockerfile              # Production container
+docker-compose.yml      # Docker Compose deployment
+tests/
+├── conftest.py         # Shared fixtures
+├── test_parse_tag.py   # parse_tag() unit tests
+├── test_find_updates.py        # find_updates() logic
+├── test_detect_registry.py     # detect_registry() table tests
+├── test_image_parsing.py       # Image ref → name + tag splitting
+├── test_notifications.py       # notify() behavior
+├── test_webhook_auth.py        # Auth header tests
+├── test_http_session.py        # HTTP session/retry config
+├── test_regex_validation.py    # Invalid regex handling
+├── test_graceful_shutdown.py   # SIGTERM/SIGINT handling
+└── test_run_on_startup.py      # RUN_ON_STARTUP behavior
+```
