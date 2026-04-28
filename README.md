@@ -121,6 +121,8 @@ update-level finding for one container:
 | Variable             | Default          | Description                                                         |
 | -------------------- | ---------------- | ------------------------------------------------------------------- |
 | `NOTIFY_ENDPOINT`    | _(empty)_        | Webhook URL to POST updates to                                      |
+| `NOTIFY_AUTH_TYPE`   | _(empty)_        | Auth type: `bearer`, `basic`, or empty (no auth)                    |
+| `NOTIFY_AUTH_TOKEN`  | _(empty)_        | Token/credentials for the `Authorization` header                    |
 | `DOCKERHUB_USERNAME` | _(empty)_        | Docker Hub username                                                 |
 | `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                          |
 | `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images |
