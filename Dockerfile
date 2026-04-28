@@ -9,9 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY monitor.py .
+COPY app/ app/
 
 # Run as non-root but still needs socket access → add to group via docker-compose
 USER nobody
 
-ENTRYPOINT ["python", "-u", "monitor.py"]
+ENTRYPOINT ["python", "-u", "-m", "app.main"]

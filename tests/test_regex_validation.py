@@ -1,12 +1,9 @@
 """Unit tests for early regex validation in run_check()."""
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from unittest.mock import patch, MagicMock
 import pytest
-import monitor
+
+from app.scanner import run_check
 
 
 def _make_container(name, image_tag, labels):
@@ -22,9 +19,9 @@ def _make_container(name, image_tag, labels):
 class TestInvalidRegexRejectedEarly:
     """Invalid regex patterns are caught before any registry API calls."""
 
-    @patch("monitor.fetch_all_tags")
-    @patch("monitor.get_dockerhub_token", return_value="fake-token")
-    @patch("monitor.docker")
+    @patch("app.scanner.fetch_all_tags")
+    @patch("app.scanner.get_dockerhub_token", return_value="fake-token")
+    @patch("app.scanner.docker")
     def test_invalid_regex_skips_container(self, mock_docker, mock_token, mock_fetch):
         """Container with invalid regex is skipped; fetch_all_tags never called."""
         container = _make_container(
@@ -36,13 +33,13 @@ class TestInvalidRegexRejectedEarly:
         mock_docker.from_env.return_value = mock_client
         mock_client.containers.list.return_value = [container]
 
-        monitor.run_check()
+        run_check()
 
         mock_fetch.assert_not_called()
 
-    @patch("monitor.fetch_all_tags")
-    @patch("monitor.get_dockerhub_token", return_value="fake-token")
-    @patch("monitor.docker")
+    @patch("app.scanner.fetch_all_tags")
+    @patch("app.scanner.get_dockerhub_token", return_value="fake-token")
+    @patch("app.scanner.docker")
     def test_invalid_regex_logs_warning(self, mock_docker, mock_token, mock_fetch, caplog):
         """A clear warning is logged naming the container and the invalid pattern."""
         container = _make_container(
@@ -56,13 +53,13 @@ class TestInvalidRegexRejectedEarly:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            monitor.run_check()
+            run_check()
 
         assert any("bad-regex-app" in msg and "Invalid tag-regex" in msg for msg in caplog.messages)
 
-    @patch("monitor.fetch_all_tags")
-    @patch("monitor.get_dockerhub_token", return_value="fake-token")
-    @patch("monitor.docker")
+    @patch("app.scanner.fetch_all_tags")
+    @patch("app.scanner.get_dockerhub_token", return_value="fake-token")
+    @patch("app.scanner.docker")
     def test_invalid_regex_does_not_block_other_containers(self, mock_docker, mock_token, mock_fetch):
         """Other containers with valid regex continue processing."""
         bad_container = _make_container(
@@ -80,7 +77,7 @@ class TestInvalidRegexRejectedEarly:
         mock_client.containers.list.return_value = [bad_container, good_container]
         mock_fetch.return_value = ["2.0.1"]
 
-        monitor.run_check()
+        run_check()
 
         mock_fetch.assert_called_once()
 
@@ -88,9 +85,9 @@ class TestInvalidRegexRejectedEarly:
 class TestValidRegexPassesThrough:
     """Valid regex patterns continue to work unchanged."""
 
-    @patch("monitor.fetch_all_tags")
-    @patch("monitor.get_dockerhub_token", return_value="fake-token")
-    @patch("monitor.docker")
+    @patch("app.scanner.fetch_all_tags")
+    @patch("app.scanner.get_dockerhub_token", return_value="fake-token")
+    @patch("app.scanner.docker")
     def test_valid_regex_proceeds_to_fetch(self, mock_docker, mock_token, mock_fetch):
         """Container with valid regex triggers fetch_all_tags."""
         container = _make_container(
@@ -103,13 +100,13 @@ class TestValidRegexPassesThrough:
         mock_client.containers.list.return_value = [container]
         mock_fetch.return_value = ["1.2.4"]
 
-        monitor.run_check()
+        run_check()
 
         mock_fetch.assert_called_once()
 
-    @patch("monitor.fetch_all_tags")
-    @patch("monitor.get_dockerhub_token", return_value="fake-token")
-    @patch("monitor.docker")
+    @patch("app.scanner.fetch_all_tags")
+    @patch("app.scanner.get_dockerhub_token", return_value="fake-token")
+    @patch("app.scanner.docker")
     def test_complex_valid_regex_passes(self, mock_docker, mock_token, mock_fetch):
         """Complex but valid regex patterns are accepted."""
         container = _make_container(
@@ -122,6 +119,6 @@ class TestValidRegexPassesThrough:
         mock_client.containers.list.return_value = [container]
         mock_fetch.return_value = ["v1.2.4"]
 
-        monitor.run_check()
+        run_check()
 
         mock_fetch.assert_called_once()

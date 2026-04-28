@@ -3,7 +3,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers -v --tb=short"
 
 [tool.coverage.run]
-source = ["."]
+source = ["app"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
