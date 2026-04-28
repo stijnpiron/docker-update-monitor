@@ -66,12 +66,12 @@ services:
 
 ### Regex tips
 
-| Image tag format | Regex |
-|---|---|
-| `1.2.3` | `^(\d+)\.(\d+)\.(\d+)$` |
-| `v1.2.3` | `^v(\d+)\.(\d+)\.(\d+)$` |
+| Image tag format         | Regex                          |
+| ------------------------ | ------------------------------ |
+| `1.2.3`                  | `^(\d+)\.(\d+)\.(\d+)$`        |
+| `v1.2.3`                 | `^v(\d+)\.(\d+)\.(\d+)$`       |
 | `1.2.3.456` (four parts) | `^(\d+)\.(\d+)\.(\d+)\.(\d+)$` |
-| `1.25.3-alpine` | `^(\d+)\.(\d+)\.(\d+)-alpine$` |
+| `1.25.3-alpine`          | `^(\d+)\.(\d+)\.(\d+)-alpine$` |
 
 The capture groups must be castable to integers and ordered
 `(major, minor, patch [, build])`.
@@ -118,16 +118,16 @@ update-level finding for one container:
 
 ## Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `NOTIFY_ENDPOINT` | *(empty)* | Webhook URL to POST updates to |
-| `DOCKERHUB_USERNAME` | *(empty)* | Docker Hub username |
-| `DOCKERHUB_PASSWORD` | *(empty)* | Docker Hub password or PAT |
-| `GITHUB_TOKEN` | *(empty)* | GitHub PAT with `read:packages` scope — required for ghcr.io images |
-| `CRON_SCHEDULE` | `0 * * * *` | Cron expression for check schedule (standard 5-field cron) |
-| `DRY_RUN` | `false` | Log only, no HTTP POSTs |
-| `LABEL_PREFIX` | `update-monitor` | Label namespace |
-| `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| Variable             | Default          | Description                                                         |
+| -------------------- | ---------------- | ------------------------------------------------------------------- |
+| `NOTIFY_ENDPOINT`    | _(empty)_        | Webhook URL to POST updates to                                      |
+| `DOCKERHUB_USERNAME` | _(empty)_        | Docker Hub username                                                 |
+| `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                          |
+| `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images |
+| `CRON_SCHEDULE`      | `0 * * * *`      | Cron expression for check schedule (standard 5-field cron)          |
+| `DRY_RUN`            | `false`          | Log only, no HTTP POSTs                                             |
+| `LABEL_PREFIX`       | `update-monitor` | Label namespace                                                     |
+| `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                              |
 
 > **Note:** The `docker-compose.yml` in this repo sets `CRON_SCHEDULE` to
 > `0 3 * * 7` (every Sunday at 03:00), overriding the code default of
@@ -141,11 +141,11 @@ update-level finding for one container:
 Given current version `1.0.0` and available tags including
 `1.0.1`, `1.0.6`, `1.1.0`, `1.2.0`, `2.0.0`:
 
-| Level | Reported | Skipped |
-|---|---|---|
-| patch | `1.0.6` | `1.0.1`, `1.0.2`, … |
-| minor | `1.2.0` | `1.1.0`, `1.1.5`, … |
-| major | `2.0.0` | — |
+| Level | Reported | Skipped             |
+| ----- | -------- | ------------------- |
+| patch | `1.0.6`  | `1.0.1`, `1.0.2`, … |
+| minor | `1.2.0`  | `1.1.0`, `1.1.5`, … |
+| major | `2.0.0`  | —                   |
 
 Only the highest candidate per level is reported.
 
