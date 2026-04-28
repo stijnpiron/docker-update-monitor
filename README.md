@@ -15,7 +15,7 @@ payload to a webhook when updates are found.
    - Finds the **best** (highest) update per level — one for patch, one for
      minor, one for major — and deduplicates. You never receive intermediate
      versions, only the latest available at each update level.
-3. POSTs all found updates to your webhook endpoint.
+3. POSTs all found updates to your webhook endpoint. 
 
 ---
 
