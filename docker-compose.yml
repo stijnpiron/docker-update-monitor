@@ -1,0 +1,42 @@
+services:
+
+  docker-update-monitor:
+    image: ghcr.io/stijnpiron/docker-update-monitor:latest
+    container_name: docker-update-monitor
+    restart: unless-stopped
+
+    environment:
+      # Required: where to POST update payloads
+      NOTIFY_ENDPOINT: "${NOTIFY_ENDPOINT}"
+
+      # Docker Hub credentials (strongly recommended to avoid anonymous rate limits).
+      # Preferred: use a Personal Access Token (PAT) as the password.
+      # Generate one at: https://app.docker.com/settings/personal-access-tokens
+      DOCKERHUB_USERNAME: "${DOCKERHUB_USERNAME}"
+      DOCKERHUB_PASSWORD: "${DOCKERHUB_PASSWORD}"   # password or PAT
+
+      # Cron schedule for checks (default: every hour on the hour)
+      # Standard 5-field cron: minute hour day month weekday
+      # Examples:
+      #   "0 * * * *"    — every hour
+      #   "0 */6 * * *"  — every 6 hours
+      #   "0 8 * * *"    — daily at 08:00
+      #   "0 8 * * 1"    — every Monday at 08:00
+      CRON_SCHEDULE: "*/1 * * * *"
+
+      # Set to "true" to log updates without POSTing — useful for testing
+      DRY_RUN: "false"
+
+      # Label namespace (default: update-monitor)
+      # LABEL_PREFIX: "update-monitor"
+
+      # Log verbosity: DEBUG | INFO | WARNING | ERROR
+      LOG_LEVEL: "INFO"
+
+    volumes:
+      # Read-only access to the Docker socket
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    # Needed so 'nobody' user can access the Docker socket
+    group_add:
+      - "${DOCKER_GID:-999}"
