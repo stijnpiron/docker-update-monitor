@@ -30,7 +30,7 @@ class TestInvalidRegexRejectedEarly:
         container = _make_container(
             "bad-regex-app",
             "myimage:1.0.0",
-            {"update-monitor.tag-regex": "[invalid(regex"},
+            {"docker-update-monitor.tag-regex": "[invalid(regex"},
         )
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
@@ -48,7 +48,7 @@ class TestInvalidRegexRejectedEarly:
         container = _make_container(
             "bad-regex-app",
             "myimage:1.0.0",
-            {"update-monitor.tag-regex": "[bad("},
+            {"docker-update-monitor.tag-regex": "[bad("},
         )
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
@@ -68,12 +68,12 @@ class TestInvalidRegexRejectedEarly:
         bad_container = _make_container(
             "bad-app",
             "badimage:1.0.0",
-            {"update-monitor.tag-regex": "[invalid("},
+            {"docker-update-monitor.tag-regex": "[invalid("},
         )
         good_container = _make_container(
             "good-app",
             "goodimage:2.0.0",
-            {"update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
         )
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
@@ -96,7 +96,7 @@ class TestValidRegexPassesThrough:
         container = _make_container(
             "valid-app",
             "myimage:1.2.3",
-            {"update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
         )
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
@@ -115,7 +115,7 @@ class TestValidRegexPassesThrough:
         container = _make_container(
             "complex-app",
             "myimage:v1.2.3-beta",
-            {"update-monitor.tag-regex": r"^v(\d+)\.(\d+)\.(\d+)(?:-\w+)?$"},
+            {"docker-update-monitor.tag-regex": r"^v(\d+)\.(\d+)\.(\d+)(?:-\w+)?$"},
         )
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
