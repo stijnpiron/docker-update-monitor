@@ -4,10 +4,10 @@ Docker Update Monitor
 Monitors running containers for available image updates and notifies a webhook endpoint.
 
 Label schema (add to your containers):
-  update-monitor.tag-regex   Required. Regex with capture groups for version parts.
+  docker-update-monitor.tag-regex   Required. Regex with capture groups for version parts.
                              E.g.  ^v?(\\d+)\\.(\\d+)\\.(\\d+)$  for semantic versioning.
                              The groups must be comparable as integers (major, minor, patch).
-  update-monitor.stack       Optional. Override stack name (auto-detected from Compose otherwise).
+  docker-update-monitor.stack       Optional. Override stack name (auto-detected from Compose otherwise).
 
 Environment variables:
   NOTIFY_ENDPOINT            Webhook URL to POST update payloads to.
@@ -20,7 +20,7 @@ Environment variables:
                              Supports standard 5-field cron: minute hour day month weekday.
                              Examples: "0 */6 * * *" (every 6h), "0 8 * * *" (daily at 08:00).
   LOG_LEVEL                  Logging level (default: INFO).
-  LABEL_PREFIX               Label namespace (default: update-monitor).
+  LABEL_PREFIX               Label namespace (default: docker-update-monitor).
   DRY_RUN                    Set to "true" to log updates without POSTing.
 """
 
@@ -48,7 +48,7 @@ DOCKERHUB_USER    = os.environ.get("DOCKERHUB_USERNAME", "")
 DOCKERHUB_PASS    = os.environ.get("DOCKERHUB_PASSWORD", "")
 GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
 CRON_SCHEDULE     = os.environ.get("CRON_SCHEDULE", "0 * * * *")
-LABEL_PREFIX      = os.environ.get("LABEL_PREFIX", "update-monitor")
+LABEL_PREFIX      = os.environ.get("LABEL_PREFIX", "docker-update-monitor")
 DRY_RUN           = os.environ.get("DRY_RUN", "false").lower() == "true"
 LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO").upper()
 
