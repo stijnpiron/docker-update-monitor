@@ -123,10 +123,16 @@ update-level finding for one container:
 | `NOTIFY_ENDPOINT` | *(empty)* | Webhook URL to POST updates to |
 | `DOCKERHUB_USERNAME` | *(empty)* | Docker Hub username |
 | `DOCKERHUB_PASSWORD` | *(empty)* | Docker Hub password or PAT |
-| `POLL_INTERVAL` | `3600` | Seconds between checks |
+| `GITHUB_TOKEN` | *(empty)* | GitHub PAT with `read:packages` scope — required for ghcr.io images |
+| `CRON_SCHEDULE` | `0 * * * *` | Cron expression for check schedule (standard 5-field cron) |
 | `DRY_RUN` | `false` | Log only, no HTTP POSTs |
 | `LABEL_PREFIX` | `update-monitor` | Label namespace |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+
+> **Note:** The `docker-compose.yml` in this repo sets `CRON_SCHEDULE` to
+> `0 3 * * 7` (every Sunday at 03:00), overriding the code default of
+> `0 * * * *` (every hour). Adjust the variable in your `.env` or
+> `docker-compose.yml` to suit your needs.
 
 ---
 
