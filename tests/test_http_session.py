@@ -97,7 +97,7 @@ class TestSessionIsReused:
 
         mock_session.post.assert_called_once()
         call_kwargs = mock_session.post.call_args
-        assert "http://hook.example.com" in call_kwargs.args or call_kwargs[0][0] == "http://hook.example.com"
+        assert call_kwargs.args[0] == "http://hook.example.com"
 
 
 class TestRetryBehavior:
