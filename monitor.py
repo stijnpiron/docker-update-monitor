@@ -417,6 +417,12 @@ def run_check() -> None:
             log.debug(f"  [{container.name}] No '{LABEL_PREFIX}.tag-regex' label — skipping")
             continue
 
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            log.warning(f"  [{container.name}] Invalid tag-regex '{pattern}': {exc} — skipping")
+            continue
+
         # Resolve full image reference
         image_ref = None
         if container.image.tags:
