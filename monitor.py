@@ -282,10 +282,14 @@ def find_updates(
     Given the current tag and a list of all available tags (filtered by `pattern`),
     return up to three "best" tags — one per update level.
 
-    Rules (assuming semver-style groups: major, minor, patch):
-      patch  — same major + minor, higher patch  → report only the highest patch
-      minor  — same major, higher minor           → report only the highest minor
-      major  — higher major                       → report only the highest major
+    Adaptive comparison based on the number of capture groups:
+      2 groups (major, minor):
+        minor — same major, higher minor  → report only the highest minor
+        major — higher major              → report only the highest major
+      3+ groups (major, minor, patch, …):
+        patch — same major + minor, higher patch/rest  → report only the highest
+        minor — same major, higher minor               → report only the highest
+        major — higher major                           → report only the highest
 
     Only the *best* (highest) candidate per level is returned, so you'll
     never get spammed with every intermediate version.
@@ -298,29 +302,43 @@ def find_updates(
     if current is None:
         log.warning(f"    Pattern '{pattern}' did not match current tag '{current_tag}'")
         return {}
-    if len(current) < 3:
-        log.warning(f"    Pattern '{pattern}' needs at least 3 capture groups (major, minor, patch), got {len(current)}")
+    if len(current) < 2:
+        log.warning(f"    Pattern '{pattern}' needs at least 2 capture groups (major, minor), got {len(current)}")
         return {}
 
-    cur_maj, cur_min, cur_pat = current[0], current[1], current[2]
+    num_groups = len(current)
 
     # (version_tuple, tag_string) per level
     best: dict[str, tuple[tuple, str]] = {}
 
     for tag in all_tags:
         v = parse_tag(tag, pattern)
-        if v is None or len(v) < 3:
+        if v is None or len(v) < num_groups:
             continue
-        maj, minor, pat = v[0], v[1], v[2]
 
-        if maj == cur_maj and minor == cur_min and pat > cur_pat:
-            level = "patch"
-        elif maj == cur_maj and minor > cur_min:
-            level = "minor"
-        elif maj > cur_maj:
-            level = "major"
+        if num_groups == 2:
+            maj, minor = v[0], v[1]
+            cur_maj, cur_min = current[0], current[1]
+
+            if maj == cur_maj and minor > cur_min:
+                level = "minor"
+            elif maj > cur_maj:
+                level = "major"
+            else:
+                continue
         else:
-            continue  # older or equal — skip
+            # 3+ groups: major, minor, patch (+ optional extras)
+            maj, minor, rest = v[0], v[1], v[2:]
+            cur_maj, cur_min, cur_rest = current[0], current[1], current[2:]
+
+            if maj == cur_maj and minor == cur_min and rest > cur_rest:
+                level = "patch"
+            elif maj == cur_maj and minor > cur_min:
+                level = "minor"
+            elif maj > cur_maj:
+                level = "major"
+            else:
+                continue
 
         current_best = best.get(level)
         if current_best is None or v > current_best[0]:
