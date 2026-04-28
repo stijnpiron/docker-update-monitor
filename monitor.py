@@ -11,6 +11,8 @@ Label schema (add to your containers):
 
 Environment variables:
   NOTIFY_ENDPOINT            Webhook URL to POST update payloads to.
+  NOTIFY_AUTH_TYPE           Authentication type: "bearer" | "basic" | empty (no auth).
+  NOTIFY_AUTH_TOKEN          Token/credentials value for the Authorization header.
   DOCKERHUB_USERNAME         Docker Hub username.
   DOCKERHUB_PASSWORD         Docker Hub password OR a Personal Access Token (PAT).
                              PATs are preferred — create one at hub.docker.com → Account Settings → Personal access tokens.
@@ -49,6 +51,8 @@ from docker.errors import DockerException
 # ---------------------------------------------------------------------------
 
 NOTIFY_ENDPOINT   = os.environ.get("NOTIFY_ENDPOINT", "")
+NOTIFY_AUTH_TYPE  = os.environ.get("NOTIFY_AUTH_TYPE", "").lower()
+NOTIFY_AUTH_TOKEN = os.environ.get("NOTIFY_AUTH_TOKEN", "")
 DOCKERHUB_USER    = os.environ.get("DOCKERHUB_USERNAME", "")
 DOCKERHUB_PASS    = os.environ.get("DOCKERHUB_PASSWORD", "")
 GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
@@ -414,11 +418,19 @@ def notify(updates: list[UpdateInfo]) -> None:
         log.info("Updates found:\n" + json.dumps(payload, indent=2))
         return
 
+    headers = {"Content-Type": "application/json"}
+    if NOTIFY_AUTH_TYPE == "bearer" and NOTIFY_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {NOTIFY_AUTH_TOKEN}"
+    elif NOTIFY_AUTH_TYPE == "basic" and NOTIFY_AUTH_TOKEN:
+        headers["Authorization"] = f"Basic {NOTIFY_AUTH_TOKEN}"
+    elif NOTIFY_AUTH_TYPE and NOTIFY_AUTH_TYPE not in ("bearer", "basic"):
+        log.warning(f"Unknown NOTIFY_AUTH_TYPE '{NOTIFY_AUTH_TYPE}' — sending without authentication")
+
     try:
         resp = http_session.post(
             NOTIFY_ENDPOINT,
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=15,
         )
         resp.raise_for_status()
