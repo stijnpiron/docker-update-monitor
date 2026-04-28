@@ -125,6 +125,7 @@ update-level finding for one container:
 | `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                          |
 | `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images |
 | `CRON_SCHEDULE`      | `0 * * * *`      | Cron expression for check schedule (standard 5-field cron)          |
+| `RUN_ON_STARTUP`     | `true`           | Run an update check immediately on startup                          |
 | `DRY_RUN`            | `false`          | Log only, no HTTP POSTs                                             |
 | `LABEL_PREFIX`       | `update-monitor` | Label namespace                                                     |
 | `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                              |

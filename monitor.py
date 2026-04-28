@@ -19,6 +19,8 @@ Environment variables:
   CRON_SCHEDULE              Cron expression for check schedule (default: "0 * * * *" = every hour).
                              Supports standard 5-field cron: minute hour day month weekday.
                              Examples: "0 */6 * * *" (every 6h), "0 8 * * *" (daily at 08:00).
+  RUN_ON_STARTUP             Set to "true" (default) to run an update check immediately on startup.
+                             Set to "false" to wait for the first cron tick.
   LOG_LEVEL                  Logging level (default: INFO).
   LABEL_PREFIX               Label namespace (default: docker-update-monitor).
   DRY_RUN                    Set to "true" to log updates without POSTing.
@@ -48,6 +50,7 @@ DOCKERHUB_USER    = os.environ.get("DOCKERHUB_USERNAME", "")
 DOCKERHUB_PASS    = os.environ.get("DOCKERHUB_PASSWORD", "")
 GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
 CRON_SCHEDULE     = os.environ.get("CRON_SCHEDULE", "0 * * * *")
+RUN_ON_STARTUP    = os.environ.get("RUN_ON_STARTUP", "true").lower() == "true"
 LABEL_PREFIX      = os.environ.get("LABEL_PREFIX", "docker-update-monitor")
 DRY_RUN           = os.environ.get("DRY_RUN", "false").lower() == "true"
 LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -498,6 +501,10 @@ def main() -> None:
         sys.exit(1)
 
     log.info(f"Schedule: '{CRON_SCHEDULE}'")
+
+    if RUN_ON_STARTUP:
+        log.info("Running initial check on startup")
+        run_check()
 
     cron = croniter(CRON_SCHEDULE, datetime.now(timezone.utc))
     next_run = cron.get_next(datetime)
