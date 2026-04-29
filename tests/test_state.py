@@ -12,6 +12,7 @@ from app.models import UpdateInfo
 def _make_update(**overrides) -> UpdateInfo:
     defaults = dict(
         container_name="web",
+        service_name="web",
         stack="mystack",
         image="nginx",
         current_version="1.0.0",

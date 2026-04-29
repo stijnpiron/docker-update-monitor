@@ -12,6 +12,7 @@ _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS updates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     container_name TEXT NOT NULL,
+    service_name TEXT NOT NULL DEFAULT '',
     image TEXT NOT NULL,
     current_version TEXT NOT NULL,
     new_version TEXT NOT NULL,
@@ -50,15 +51,16 @@ def process_scan(updates: list[UpdateInfo], scan_time: datetime | None = None) -
         # --- upsert current findings ---
         for u in updates:
             conn.execute(
-                """INSERT INTO updates (container_name, image, current_version, new_version,
+                """INSERT INTO updates (container_name, service_name, image, current_version, new_version,
                                         update_type, stack, first_seen_at, last_seen_at, resolved_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                    ON CONFLICT(container_name, image, new_version, update_type) DO UPDATE SET
                        last_seen_at = excluded.last_seen_at,
                        current_version = excluded.current_version,
+                       service_name = excluded.service_name,
                        stack = excluded.stack,
                        resolved_at = NULL""",
-                (u.container_name, u.image, u.current_version, u.new_version,
+                (u.container_name, u.service_name, u.image, u.current_version, u.new_version,
                  u.update_type, u.stack, ts, ts),
             )
 
@@ -104,6 +106,7 @@ def process_scan(updates: list[UpdateInfo], scan_time: datetime | None = None) -
             status = "new" if row["first_seen_at"] == ts else "known"
             result.append(UpdateInfo(
                 container_name=row["container_name"],
+                service_name=row["service_name"],
                 stack=row["stack"],
                 image=row["image"],
                 current_version=row["current_version"],
@@ -115,6 +118,7 @@ def process_scan(updates: list[UpdateInfo], scan_time: datetime | None = None) -
         for row in resolved_rows:
             result.append(UpdateInfo(
                 container_name=row["container_name"],
+                service_name=row["service_name"],
                 stack=row["stack"],
                 image=row["image"],
                 current_version=row["current_version"],

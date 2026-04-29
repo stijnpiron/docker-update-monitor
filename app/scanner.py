@@ -78,12 +78,13 @@ def run_check() -> None:
         else:
             image_name, current_tag = image_ref, "latest"
 
-        # Detect stack (Compose sets this automatically)
+        # Detect stack and service (Compose sets these automatically)
         stack = (
             labels.get(f"{_config.LABEL_PREFIX}.stack")
             or labels.get("com.docker.compose.project")
             or "standalone"
         )
+        service_name = labels.get("com.docker.compose.service", "")
 
         _config.log.info(f"  [{container.name}]  image={image_name}:{current_tag}  stack={stack}")
 
@@ -106,6 +107,7 @@ def run_check() -> None:
                 _config.log.info(f"    {update_type.upper():5s} update: {current_tag} → {new_tag}")
                 all_updates.append(UpdateInfo(
                     container_name=container.name,
+                    service_name=service_name,
                     stack=stack,
                     image=image_name,
                     current_version=current_tag,

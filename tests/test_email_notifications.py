@@ -13,6 +13,7 @@ from app.notifications import dispatch
 def _make_update(**kwargs):
     defaults = dict(
         container_name="test-app",
+        service_name="app",
         stack="mystack",
         image="nginx",
         current_version="1.0.0",
