@@ -63,3 +63,15 @@ services:
     # Needed so 'nobody' user can access the Docker socket
     group_add:
       - "${DOCKER_GID:-999}"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3

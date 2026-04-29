@@ -23,6 +23,8 @@ SMTP_FROM         = os.environ.get("SMTP_FROM", "")
 SMTP_TO           = [addr.strip() for addr in os.environ.get("SMTP_TO", "").split(",") if addr.strip()]
 SMTP_TLS          = os.environ.get("SMTP_TLS", "true").lower() == "true"
 
+WEB_PORT          = int(os.environ.get("WEB_PORT", "8080"))
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s  %(levelname)-8s  %(message)s",

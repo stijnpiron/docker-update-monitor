@@ -40,6 +40,7 @@ os.environ["RUN_ON_STARTUP"] = "false"
 os.environ["CRON_SCHEDULE"] = "0 0 1 1 *"
 os.environ["DRY_RUN"] = "true"
 os.environ["STATE_DB_PATH"] = sys.argv[1]
+os.environ["WEB_PORT"] = "0"
 from app.main import main
 main()
 """, str(tmp_path / "state.db")],

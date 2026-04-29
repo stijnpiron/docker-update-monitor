@@ -65,3 +65,19 @@ class TestDetectRegistryUnknown:
 
     def test_custom_domain(self):
         assert detect_registry("my.registry.local/app") == "unknown"
+
+
+class TestDetectRegistryURL:
+    """Images specified as full URLs (with scheme)."""
+
+    def test_ghcr_url(self):
+        assert detect_registry("https://ghcr.io/owner/repo") == "ghcr"
+
+    def test_lscr_url(self):
+        assert detect_registry("https://lscr.io/linuxserver/sonarr") == "ghcr"
+
+    def test_dockerhub_url(self):
+        assert detect_registry("https://docker.io/library/nginx") == "dockerhub"
+
+    def test_unknown_url(self):
+        assert detect_registry("https://quay.io/prometheus/node-exporter") == "unknown"
