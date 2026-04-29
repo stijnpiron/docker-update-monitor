@@ -6,11 +6,22 @@ import app.http as _http
 from app.models import UpdateInfo
 
 
+def _build_payload(updates: list[UpdateInfo]) -> dict:
+    """Group updates by status into a structured payload."""
+    grouped: dict[str, list[dict]] = {"new": [], "known": [], "resolved": []}
+    for u in updates:
+        entry = asdict(u)
+        del entry["status"]
+        grouped.setdefault(u.status, []).append(entry)
+    # Drop empty categories
+    return {k: v for k, v in grouped.items() if v}
+
+
 def notify(updates: list[UpdateInfo]) -> None:
     if not updates:
         return
 
-    payload = [asdict(u) for u in updates]
+    payload = _build_payload(updates)
 
     if _config.DRY_RUN:
         _config.log.info("DRY_RUN — would POST:\n" + json.dumps(payload, indent=2))

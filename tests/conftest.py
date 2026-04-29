@@ -1,11 +1,24 @@
 """Shared fixtures for the update-monitor test suite."""
 
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app import http as http_mod
 from app import main as main_mod
+
+
+@pytest.fixture(autouse=True)
+def _state_db_in_tmp(tmp_path):
+    """Redirect the state DB to a temp directory for every test."""
+    db_path = str(tmp_path / "state.db")
+    with patch("app.config.STATE_DB_PATH", db_path):
+        import app.state as state_mod
+        state_mod._DB_PATH = Path(db_path)
+        yield
 
 
 @pytest.fixture

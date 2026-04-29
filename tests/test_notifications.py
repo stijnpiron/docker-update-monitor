@@ -18,6 +18,7 @@ def _make_update(**kwargs):
         current_version="1.0.0",
         new_version="1.1.0",
         update_type="minor",
+        status="new",
     )
     defaults.update(kwargs)
     return UpdateInfo(**defaults)
@@ -88,8 +89,10 @@ class TestNotifySuccessfulPost:
 
         mock_session.post.assert_called_once()
         call_kwargs = mock_session.post.call_args
-        assert call_kwargs[1]["json"][0]["container_name"] == "test-app"
-        assert call_kwargs[1]["json"][0]["new_version"] == "1.1.0"
+        payload = call_kwargs[1]["json"]
+        assert "new" in payload
+        assert payload["new"][0]["container_name"] == "test-app"
+        assert payload["new"][0]["new_version"] == "1.1.0"
 
     @patch.object(http_mod, "http_session")
     def test_successful_post_logs_count(self, mock_session, caplog):

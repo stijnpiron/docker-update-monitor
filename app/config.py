@@ -11,6 +11,7 @@ CRON_SCHEDULE     = os.environ.get("CRON_SCHEDULE", "0 * * * *")
 RUN_ON_STARTUP    = os.environ.get("RUN_ON_STARTUP", "true").lower() == "true"
 LABEL_PREFIX      = os.environ.get("LABEL_PREFIX", "docker-update-monitor")
 DRY_RUN           = os.environ.get("DRY_RUN", "false").lower() == "true"
+STATE_DB_PATH     = os.environ.get("STATE_DB_PATH", "/app/data/state.db")
 LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 logging.basicConfig(
