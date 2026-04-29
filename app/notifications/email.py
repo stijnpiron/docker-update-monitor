@@ -44,6 +44,8 @@ def _build_rows(updates: list[UpdateInfo]) -> str:
         rows += (
             f'<tr>'
             f'<td style="{_TD}font-weight:bold;">{escape(u.stack)}</td>'
+            f'<td style="{_TD}">{escape(u.service_name or u.container_name)}</td>'
+            f'<td style="{_TD}">{escape(u.container_name)}</td>'
             f'<td style="{_TD}">{escape(u.image)}</td>'
             f'<td style="{_MONO}">{escape(u.current_version or "\u2014")}</td>'
             f'<td style="{_MONO}color:{color};font-weight:bold;">{escape(u.new_version)}</td>'
@@ -61,6 +63,8 @@ def _build_section(title: str, emoji: str, updates: list[UpdateInfo], header_col
         f'<table style="border-collapse:collapse;width:100%;">'
         f'<thead><tr style="background:#f3f4f6;">'
         f'<th style="padding:6px 12px;text-align:left;">Stack</th>'
+        f'<th style="padding:6px 12px;text-align:left;">Service</th>'
+        f'<th style="padding:6px 12px;text-align:left;">Container</th>'
         f'<th style="padding:6px 12px;text-align:left;">Image</th>'
         f'<th style="padding:6px 12px;text-align:left;">Current</th>'
         f'<th style="padding:6px 12px;text-align:left;">Latest</th>'
@@ -106,8 +110,8 @@ def _build_plain(updates: list[UpdateInfo]) -> str:
         lines.append("-" * 30)
         for u in group:
             lines.append(
-                f"  [{u.stack}] {u.image} "
-                f"{u.current_version} -> {u.new_version} ({u.update_type})"
+                f"  [{u.stack}] {u.service_name or u.container_name} ({u.container_name}) "
+                f"{u.image} {u.current_version} -> {u.new_version} ({u.update_type})"
             )
         lines.append("")
     return "\n".join(lines)

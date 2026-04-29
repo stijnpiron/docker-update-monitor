@@ -38,6 +38,19 @@ class TestDetectRegistryGHCR:
         assert detect_registry("ghcr.io/user/app") == "ghcr"
 
 
+class TestDetectRegistryLSCR:
+    """Images from lscr.io that should resolve to 'ghcr' (GHCR alias)."""
+
+    def test_lscr_standard(self):
+        assert detect_registry("lscr.io/linuxserver/bazarr") == "ghcr"
+
+    def test_lscr_with_tag_in_first_segment(self):
+        assert detect_registry("lscr.io/linuxserver/sonarr") == "ghcr"
+
+    def test_lscr_nested_path(self):
+        assert detect_registry("lscr.io/linuxserver/bazarr") == "ghcr"
+
+
 class TestDetectRegistryUnknown:
     """Images from unsupported registries."""
 
@@ -52,3 +65,19 @@ class TestDetectRegistryUnknown:
 
     def test_custom_domain(self):
         assert detect_registry("my.registry.local/app") == "unknown"
+
+
+class TestDetectRegistryURL:
+    """Images specified as full URLs (with scheme)."""
+
+    def test_ghcr_url(self):
+        assert detect_registry("https://ghcr.io/owner/repo") == "ghcr"
+
+    def test_lscr_url(self):
+        assert detect_registry("https://lscr.io/linuxserver/sonarr") == "ghcr"
+
+    def test_dockerhub_url(self):
+        assert detect_registry("https://docker.io/library/nginx") == "dockerhub"
+
+    def test_unknown_url(self):
+        assert detect_registry("https://quay.io/prometheus/node-exporter") == "unknown"

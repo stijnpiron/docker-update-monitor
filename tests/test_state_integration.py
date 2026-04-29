@@ -15,6 +15,7 @@ def test_two_consecutive_scans():
 
     update_a = UpdateInfo(
         container_name="web",
+        service_name="web",
         stack="mystack",
         image="nginx",
         current_version="1.0.0",
@@ -23,6 +24,7 @@ def test_two_consecutive_scans():
     )
     update_b = UpdateInfo(
         container_name="db",
+        service_name="db",
         stack="mystack",
         image="postgres",
         current_version="15.0",
@@ -31,6 +33,7 @@ def test_two_consecutive_scans():
     )
     update_c = UpdateInfo(
         container_name="cache",
+        service_name="cache",
         stack="mystack",
         image="redis",
         current_version="7.0.0",

@@ -1,4 +1,3 @@
-import base64
 from typing import Optional
 
 import requests
@@ -6,32 +5,17 @@ import requests
 from app.config import log
 import app.http as _http
 
-
-def _get_ghcr_token(owner: str, repo: str, github_token: str) -> Optional[str]:
-    """Exchange a GitHub PAT for a short-lived GHCR pull token."""
-    # GHCR uses the standard OCI token endpoint
-    auth = base64.b64encode(f"token:{github_token}".encode()).decode()
-    try:
-        resp = _http.http_session.get(
-            f"https://ghcr.io/token?service=ghcr.io&scope=repository:{owner}/{repo}:pull",
-            headers={"Authorization": f"Basic {auth}"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json().get("token")
-    except Exception as exc:
-        log.warning(f"GHCR token exchange failed for {owner}/{repo}: {exc}")
-        return None
+_MAX_PAGES = 100  # Safety cap to prevent infinite loops (100 × 100 = 10k versions)
 
 
-def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
+def _fetch_ghcr_tags(image_name: str, github_token: str, current_tag: Optional[str] = None) -> list[str]:
     """
-    Fetch all tags from GitHub Container Registry using the OCI v2 API.
-    image_name should include the ghcr.io/ prefix, e.g. ghcr.io/owner/repo.
-    Pagination follows the Link: <url>; rel="next" header.
+    Fetch tags from GitHub Container Registry using the GitHub Packages REST API.
+    Uses the versions endpoint which returns results sorted by creation date
+    (newest first), allowing early stop once the current tag is found.
     """
-    # Strip ghcr.io/ → owner/repo (may be owner/repo or owner/group/repo)
-    path = image_name.removeprefix("ghcr.io/")
+    # Strip ghcr.io/ or lscr.io/ → owner/repo (may be owner/repo or owner/group/repo)
+    path = image_name.removeprefix("ghcr.io/").removeprefix("lscr.io/")
     parts = path.split("/")
     if len(parts) < 2:
         log.warning(f"GHCR: cannot parse owner/repo from '{image_name}'")
@@ -44,30 +28,49 @@ def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
                     "Set GITHUB_TOKEN with read:packages scope.")
         return []
 
-    pull_token = _get_ghcr_token(owner, repo, github_token)
-    if not pull_token:
-        return []
-
-    headers = {"Authorization": f"Bearer {pull_token}"}
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {github_token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
     tags: list[str] = []
-    url = f"https://ghcr.io/v2/{owner}/{repo}/tags/list?n=100"
+    page = 1
+    # Try org endpoint first; fall back to user endpoint on 404
+    base_url = (f"https://api.github.com/orgs/{owner}/packages/container/"
+                f"{repo}/versions")
 
-    while url:
+    while page <= _MAX_PAGES:
+        url = f"{base_url}?per_page=100&page={page}"
         try:
             resp = _http.http_session.get(url, headers=headers, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-            tags.extend(data.get("tags") or [])
 
-            # OCI pagination uses the Link header, not a next field in the body
-            link = resp.headers.get("Link", "")
-            next_url = None
-            for part in link.split(","):
-                part = part.strip()
-                if 'rel="next"' in part:
-                    next_url = part.split(";")[0].strip().strip("<>")
-                    break
-            url = next_url
+            # If org endpoint returns 404 on first page, switch to user endpoint
+            if resp.status_code == 404 and page == 1:
+                base_url = (f"https://api.github.com/users/{owner}/packages/container/"
+                            f"{repo}/versions")
+                url = f"{base_url}?per_page=100&page={page}"
+                resp = _http.http_session.get(url, headers=headers, timeout=20)
+
+            resp.raise_for_status()
+            versions = resp.json()
+
+            if not versions:
+                break
+
+            found_current = False
+            for version in versions:
+                version_tags = (version.get("metadata", {})
+                                .get("container", {})
+                                .get("tags") or [])
+                tags.extend(version_tags)
+                if current_tag and current_tag in version_tags:
+                    found_current = True
+
+            if found_current:
+                log.debug(f"GHCR: found current tag '{current_tag}' — stopping pagination")
+                break
+
+            page += 1
         except requests.HTTPError as exc:
             log.error(f"GHCR HTTP error for {owner}/{repo}: {exc}")
             break

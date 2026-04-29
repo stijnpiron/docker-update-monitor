@@ -8,6 +8,13 @@ from app import config as config_mod
 from app import main as main_mod
 
 
+@pytest.fixture(autouse=True)
+def _mock_health_server():
+    """Prevent the health server from binding a real port during main() tests."""
+    with patch("app.main.start_health_server"):
+        yield
+
+
 class TestRunOnStartup:
     """Verify run_check() is called/skipped on startup based on RUN_ON_STARTUP."""
 

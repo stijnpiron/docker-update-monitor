@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class UpdateInfo:
     container_name: str
+    service_name: str
     stack: str
     image: str
     current_version: str

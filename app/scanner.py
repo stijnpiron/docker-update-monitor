@@ -11,6 +11,7 @@ from app.registry.dockerhub import get_dockerhub_token
 from app.version import find_updates
 from app.notifications import dispatch as notify
 from app.state import process_scan, mark_notified
+from app.health import update_state
 
 
 def run_check() -> None:
@@ -38,6 +39,7 @@ def run_check() -> None:
     # run different versions of the same image.
     tags_cache: dict[tuple[str, str], list[str]] = {}
     all_updates: list[UpdateInfo] = []
+    monitored_count = 0
 
     for container in containers:
         labels  = container.labels
@@ -46,6 +48,8 @@ def run_check() -> None:
         if not pattern:
             _config.log.debug(f"  [{container.name}] No '{_config.LABEL_PREFIX}.tag-regex' label — skipping")
             continue
+
+        monitored_count += 1
 
         try:
             re.compile(pattern)
@@ -78,12 +82,13 @@ def run_check() -> None:
         else:
             image_name, current_tag = image_ref, "latest"
 
-        # Detect stack (Compose sets this automatically)
+        # Detect stack and service (Compose sets these automatically)
         stack = (
             labels.get(f"{_config.LABEL_PREFIX}.stack")
             or labels.get("com.docker.compose.project")
             or "standalone"
         )
+        service_name = labels.get("com.docker.compose.service", "")
 
         _config.log.info(f"  [{container.name}]  image={image_name}:{current_tag}  stack={stack}")
 
@@ -106,6 +111,7 @@ def run_check() -> None:
                 _config.log.info(f"    {update_type.upper():5s} update: {current_tag} → {new_tag}")
                 all_updates.append(UpdateInfo(
                     container_name=container.name,
+                    service_name=service_name,
                     stack=stack,
                     image=image_name,
                     current_version=current_tag,
@@ -130,3 +136,6 @@ def run_check() -> None:
     notify(categorized)
     if categorized:
         mark_notified(categorized, scan_time)
+
+    # Update health endpoint state
+    update_state(last_check=scan_time, containers_monitored=monitored_count)
