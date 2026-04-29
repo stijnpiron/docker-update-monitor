@@ -4,13 +4,16 @@ on:
   push:
     branches:
       - main
+      - dev
     tags:
       - "[0-9]+.[0-9]+.[0-9]+" # trigger on version tags like 1.0.0
   release:
     types: [published] # triggers when a release is published via the GitHub UI
+  # build (but don't push) on PRs for validation
   pull_request:
     branches:
-      - main # build (but don't push) on PRs for validation
+      - main
+      - dev
 
 env:
   REGISTRY: ghcr.io
@@ -47,6 +50,8 @@ jobs:
           tags: |
             # :latest on every push to main
             type=raw,value=latest,enable={{is_default_branch}}
+            # :dev on every push to dev branch
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             # :sha-abcdef1 for every commit (useful for pinning)
             type=sha,prefix=sha-
             # :1.2.3 and :1.2 and :1 from version tags (no v prefix)

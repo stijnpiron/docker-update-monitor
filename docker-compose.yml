@@ -6,7 +6,12 @@ services:
     restart: unless-stopped
 
     environment:
-      # Required: where to POST update payloads
+      # Notification channels: comma-separated list of "webhook", "email"
+      # Default: webhook (backward compatible)
+      NOTIFY_CHANNELS: "${NOTIFY_CHANNELS:-webhook}"
+
+      # --- Webhook channel ---
+      # Required (if using webhook): where to POST update payloads
       NOTIFY_ENDPOINT: "${NOTIFY_ENDPOINT}"
 
       # Docker Hub credentials (strongly recommended to avoid anonymous rate limits).
@@ -18,6 +23,16 @@ services:
       # GitHub PAT with read:packages scope — required for ghcr.io images.
       # Generate one at: https://github.com/settings/tokens
       GITHUB_TOKEN: "${GITHUB_TOKEN}"
+
+      # --- Email channel (SMTP) ---
+      # Required (if using email): SMTP_HOST, SMTP_FROM, SMTP_TO
+      SMTP_HOST: "${SMTP_HOST}"
+      SMTP_PORT: "${SMTP_PORT}"
+      SMTP_USERNAME: "${SMTP_USERNAME}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      SMTP_FROM: "${SMTP_FROM}"
+      SMTP_TO: "${SMTP_TO}"
+      SMTP_TLS: "${SMTP_TLS:-true}"
 
       # Cron schedule for checks (default: every hour on the hour)
       # Standard 5-field cron: minute hour day month weekday

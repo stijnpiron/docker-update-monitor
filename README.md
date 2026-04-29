@@ -118,19 +118,43 @@ update-level finding for one container:
 
 ## Environment variables
 
+### General
+
 | Variable             | Default          | Description                                                         |
 | -------------------- | ---------------- | ------------------------------------------------------------------- |
-| `NOTIFY_ENDPOINT`    | _(empty)_        | Webhook URL to POST updates to                                      |
-| `NOTIFY_AUTH_TYPE`   | _(empty)_        | Auth type: `bearer`, `basic`, or empty (no auth)                    |
-| `NOTIFY_AUTH_TOKEN`  | _(empty)_        | Token/credentials for the `Authorization` header                    |
+| `NOTIFY_CHANNELS`    | `webhook`        | Comma-separated list of notification channels: `webhook`, `email`   |
 | `DOCKERHUB_USERNAME` | _(empty)_        | Docker Hub username                                                 |
 | `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                          |
 | `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images |
 | `CRON_SCHEDULE`      | `0 * * * *`      | Cron expression for check schedule (standard 5-field cron)          |
 | `RUN_ON_STARTUP`     | `true`           | Run an update check immediately on startup                          |
-| `DRY_RUN`            | `false`          | Log only, no HTTP POSTs                                             |
+| `DRY_RUN`            | `false`          | Log only, no notifications sent                                     |
 | `LABEL_PREFIX`       | `update-monitor` | Label namespace                                                     |
 | `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                              |
+
+### Webhook channel
+
+| Variable            | Default   | Description                                      |
+| ------------------- | --------- | ------------------------------------------------ |
+| `NOTIFY_ENDPOINT`   | _(empty)_ | Webhook URL to POST updates to                   |
+| `NOTIFY_AUTH_TYPE`  | _(empty)_ | Auth type: `bearer`, `basic`, or empty (no auth) |
+| `NOTIFY_AUTH_TOKEN` | _(empty)_ | Token/credentials for the `Authorization` header |
+
+### Email channel (SMTP)
+
+| Variable        | Default   | Description                                        |
+| --------------- | --------- | -------------------------------------------------- |
+| `SMTP_HOST`     | _(empty)_ | SMTP server hostname (required for email)          |
+| `SMTP_PORT`     | `587`     | SMTP server port                                   |
+| `SMTP_USERNAME` | _(empty)_ | SMTP login username                                |
+| `SMTP_PASSWORD` | _(empty)_ | SMTP login password                                |
+| `SMTP_FROM`     | _(empty)_ | Sender email address (required for email)          |
+| `SMTP_TO`       | _(empty)_ | Recipient(s), comma-separated (required for email) |
+| `SMTP_TLS`      | `true`    | Use STARTTLS                                       |
+
+> **Note:** If `NOTIFY_CHANNELS` includes `email` but `SMTP_HOST`, `SMTP_FROM`,
+> or `SMTP_TO` are not set, the email channel logs a warning and is skipped —
+> the application does not crash.
 
 > **Note:** The `docker-compose.yml` in this repo sets `CRON_SCHEDULE` to
 > `0 3 * * 7` (every Sunday at 03:00), overriding the code default of
