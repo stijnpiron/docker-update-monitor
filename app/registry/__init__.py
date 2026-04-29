@@ -15,7 +15,7 @@ def fetch_all_tags(image_name: str, dockerhub_token: Optional[str], github_token
         tags = _fetch_dockerhub_tags(image_name, dockerhub_token, current_tag)
         log.info(f"  Fetched {len(tags):4d} tags  ←  DockerHub  {image_name}")
     elif registry == "ghcr":
-        tags = _fetch_ghcr_tags(image_name, github_token)
+        tags = _fetch_ghcr_tags(image_name, github_token, current_tag)
         log.info(f"  Fetched {len(tags):4d} tags  ←  GHCR       {image_name}")
     else:
         log.warning(f"  Unsupported registry for '{image_name}' — skipping. "
