@@ -9,9 +9,11 @@ on:
       - "[0-9]+.[0-9]+.[0-9]+" # trigger on version tags like 1.0.0
   release:
     types: [published] # triggers when a release is published via the GitHub UI
+  # build (but don't push) on PRs for validation
   pull_request:
     branches:
-      - main # build (but don't push) on PRs for validation
+      - main
+      - dev
 
 env:
   REGISTRY: ghcr.io
