@@ -66,3 +66,5 @@ jobs:
           cache-to: type=gha,mode=max
           # Build for both amd64 (most servers) and arm64 (Raspberry Pi / Apple M)
           platforms: linux/amd64,linux/arm64
+          provenance: false
+          sbom: false
