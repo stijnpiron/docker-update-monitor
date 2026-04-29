@@ -38,6 +38,19 @@ class TestDetectRegistryGHCR:
         assert detect_registry("ghcr.io/user/app") == "ghcr"
 
 
+class TestDetectRegistryLSCR:
+    """Images from lscr.io that should resolve to 'ghcr' (GHCR alias)."""
+
+    def test_lscr_standard(self):
+        assert detect_registry("lscr.io/linuxserver/bazarr") == "ghcr"
+
+    def test_lscr_with_tag_in_first_segment(self):
+        assert detect_registry("lscr.io/linuxserver/sonarr") == "ghcr"
+
+    def test_lscr_nested_path(self):
+        assert detect_registry("lscr.io/linuxserver/bazarr") == "ghcr"
+
+
 class TestDetectRegistryUnknown:
     """Images from unsupported registries."""
 

@@ -172,6 +172,21 @@ class TestFetchGhcrTags:
         tags = _fetch_ghcr_tags("ghcr.io/owner/repo", "gh_token")
         assert tags == []
 
+    @patch("app.registry.ghcr._get_ghcr_token", return_value="pull-token")
+    @patch.object(http_mod, "http_session")
+    def test_lscr_io_routes_through_ghcr(self, mock_session, mock_get_token):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"tags": ["1.5.4", "1.5.3"]}
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.headers = {"Link": ""}
+        mock_session.get.return_value = mock_resp
+
+        tags = _fetch_ghcr_tags("lscr.io/linuxserver/bazarr", "gh_token")
+        assert tags == ["1.5.4", "1.5.3"]
+        # Verify the GHCR API URL uses ghcr.io, not lscr.io
+        url = mock_session.get.call_args[0][0]
+        assert "ghcr.io/v2/linuxserver/bazarr/tags/list" in url
+
 
 class TestFetchAllTags:
     """Tests for fetch_all_tags() routing."""
@@ -187,6 +202,12 @@ class TestFetchAllTags:
         tags = fetch_all_tags("ghcr.io/owner/repo", None, "gh_token")
         assert tags == ["v1.0.0"]
         mock_fetch.assert_called_once_with("ghcr.io/owner/repo", "gh_token")
+
+    @patch("app.registry._fetch_ghcr_tags", return_value=["1.5.4"])
+    def test_routes_lscr_io_through_ghcr(self, mock_fetch):
+        tags = fetch_all_tags("lscr.io/linuxserver/bazarr", None, "gh_token")
+        assert tags == ["1.5.4"]
+        mock_fetch.assert_called_once_with("lscr.io/linuxserver/bazarr", "gh_token")
 
     def test_unknown_registry_returns_empty(self):
         tags = fetch_all_tags("quay.io/org/image", None, "")

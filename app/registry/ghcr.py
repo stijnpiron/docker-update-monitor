@@ -30,8 +30,8 @@ def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
     image_name should include the ghcr.io/ prefix, e.g. ghcr.io/owner/repo.
     Pagination follows the Link: <url>; rel="next" header.
     """
-    # Strip ghcr.io/ → owner/repo (may be owner/repo or owner/group/repo)
-    path = image_name.removeprefix("ghcr.io/")
+    # Strip ghcr.io/ or lscr.io/ → owner/repo (may be owner/repo or owner/group/repo)
+    path = image_name.removeprefix("ghcr.io/").removeprefix("lscr.io/")
     parts = path.split("/")
     if len(parts) < 2:
         log.warning(f"GHCR: cannot parse owner/repo from '{image_name}'")
