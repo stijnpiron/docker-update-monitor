@@ -33,14 +33,16 @@ class TestEmailBuildHtml:
         assert "1.1.0" in html
         assert "mystack" in html
 
-    def test_groups_by_stack(self):
+    def test_groups_by_status(self):
         updates = [
-            _make_update(stack="stack-a", container_name="app1"),
-            _make_update(stack="stack-b", container_name="app2"),
+            _make_update(stack="stack-a", container_name="app1", status="new"),
+            _make_update(stack="stack-b", container_name="app2", status="known", image="redis"),
         ]
         html = _build_html(updates)
         assert "stack-a" in html
         assert "stack-b" in html
+        assert "New updates" in html
+        assert "Known updates" in html
 
 
 class TestEmailBuildPlain:
@@ -51,14 +53,16 @@ class TestEmailBuildPlain:
         assert "1.1.0" in text
         assert "mystack" in text
 
-    def test_groups_by_stack(self):
+    def test_groups_by_status(self):
         updates = [
-            _make_update(stack="stack-a", container_name="app1"),
-            _make_update(stack="stack-b", container_name="app2"),
+            _make_update(stack="stack-a", container_name="app1", status="new"),
+            _make_update(stack="stack-b", container_name="app2", status="known", image="redis"),
         ]
         text = _build_plain(updates)
-        assert "Stack: stack-a" in text
-        assert "Stack: stack-b" in text
+        assert "[stack-a]" in text
+        assert "[stack-b]" in text
+        assert "New updates" in text
+        assert "Known updates" in text
 
 
 class TestEmailNotify:
@@ -85,8 +89,9 @@ class TestEmailNotify:
         args = mock_server.sendmail.call_args[0]
         assert args[0] == "from@example.com"
         assert args[1] == ["to@example.com"]
-        assert "[Docker Update Monitor]" in args[2]
-        assert "1 new update(s)" in args[2]
+        assert "Docker Update Monitor" in args[2]
+        assert "Subject:" in args[2]
+        assert "image_update" in args[2]  # Q-encoded subject
 
     @patch("app.notifications.email.smtplib.SMTP")
     def test_multiple_recipients(self, mock_smtp_cls):
