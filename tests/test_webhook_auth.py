@@ -16,6 +16,7 @@ def _make_update():
         current_version="1.0.0",
         new_version="1.1.0",
         update_type="minor",
+        status="new",
     )
 
 

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -9,3 +9,4 @@ class UpdateInfo:
     current_version: str
     new_version: str
     update_type: str        # "patch" | "minor" | "major"
+    status: str = ""        # "new" | "known" | "resolved"

@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 
 import docker
 from docker.errors import DockerException
@@ -9,6 +10,7 @@ from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
 from app.version import find_updates
 from app.notifications.webhook import notify
+from app.state import process_scan, mark_notified
 
 
 def run_check() -> None:
@@ -112,5 +114,19 @@ def run_check() -> None:
                 ))
 
     _config.log.info("-" * 60)
-    _config.log.info(f"Check complete — {len(all_updates)} update(s) to report")
-    notify(all_updates)
+    _config.log.info(f"Check complete — {len(all_updates)} update(s) detected")
+
+    scan_time = datetime.now(timezone.utc)
+
+    # Persist state and categorize: new / known / resolved
+    categorized = process_scan(all_updates, scan_time)
+
+    new_count = sum(1 for u in categorized if u.status == "new")
+    known_count = sum(1 for u in categorized if u.status == "known")
+    resolved_count = sum(1 for u in categorized if u.status == "resolved")
+    _config.log.info(f"  New: {new_count}  |  Known: {known_count}  |  Resolved: {resolved_count}")
+
+    # Notify with all categorized updates (grouped by status in payload)
+    notify(categorized)
+    if categorized:
+        mark_notified(categorized, scan_time)
