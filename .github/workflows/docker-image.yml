@@ -5,14 +5,16 @@ on:
     branches:
       - main
     tags:
-      - "v*"           # also trigger on version tags like v1.0.0
+      - "[0-9]+.[0-9]+.[0-9]+" # trigger on version tags like 1.0.0
+  release:
+    types: [published] # triggers when a release is published via the GitHub UI
   pull_request:
     branches:
-      - main           # build (but don't push) on PRs for validation
+      - main # build (but don't push) on PRs for validation
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # e.g. yourname/docker-update-monitor
+  IMAGE_NAME: ${{ github.repository }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -20,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # needed to push to ghcr.io
+      packages: write # needed to push to ghcr.io
 
     steps:
       - name: Checkout
@@ -35,7 +37,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # automatically provided, no setup needed
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags & labels)
         id: meta
@@ -47,7 +49,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             # :sha-abcdef1 for every commit (useful for pinning)
             type=sha,prefix=sha-
-            # :v1.2.3 and :v1.2 and :v1 from version tags
+            # :1.2.3 and :1.2 and :1 from version tags (no v prefix)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
