@@ -9,7 +9,7 @@ from app.models import UpdateInfo
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
 from app.version import find_updates
-from app.notifications.webhook import notify
+from app.notifications import dispatch as notify
 from app.state import process_scan, mark_notified
 
 
