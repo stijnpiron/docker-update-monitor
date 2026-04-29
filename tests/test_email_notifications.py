@@ -67,8 +67,7 @@ class TestEmailNotify:
     @patch("app.notifications.email.smtplib.SMTP")
     def test_sends_email_with_correct_headers(self, mock_smtp_cls):
         mock_server = MagicMock()
-        mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
-        mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_smtp_cls.return_value = mock_server
 
         with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
              patch.object(config_mod, "SMTP_PORT", 587), \
@@ -92,8 +91,7 @@ class TestEmailNotify:
     @patch("app.notifications.email.smtplib.SMTP")
     def test_multiple_recipients(self, mock_smtp_cls):
         mock_server = MagicMock()
-        mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
-        mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_smtp_cls.return_value = mock_server
 
         with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
              patch.object(config_mod, "SMTP_PORT", 587), \
@@ -110,8 +108,7 @@ class TestEmailNotify:
     @patch("app.notifications.email.smtplib.SMTP")
     def test_no_tls_when_disabled(self, mock_smtp_cls):
         mock_server = MagicMock()
-        mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
-        mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_smtp_cls.return_value = mock_server
 
         with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
              patch.object(config_mod, "SMTP_PORT", 25), \
@@ -124,6 +121,25 @@ class TestEmailNotify:
 
         mock_server.starttls.assert_not_called()
         mock_server.login.assert_not_called()
+
+    @patch("app.notifications.email.smtplib.SMTP_SSL")
+    def test_port_465_uses_smtp_ssl(self, mock_smtp_ssl_cls):
+        mock_server = MagicMock()
+        mock_smtp_ssl_cls.return_value = mock_server
+
+        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
+             patch.object(config_mod, "SMTP_PORT", 465), \
+             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
+             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
+             patch.object(config_mod, "SMTP_TLS", True), \
+             patch.object(config_mod, "SMTP_USERNAME", "user"), \
+             patch.object(config_mod, "SMTP_PASSWORD", "pass"):
+            email_notify([_make_update()])
+
+        mock_smtp_ssl_cls.assert_called_once_with("smtp.example.com", 465)
+        mock_server.starttls.assert_not_called()
+        mock_server.login.assert_called_once_with("user", "pass")
+        mock_server.sendmail.assert_called_once()
 
     def test_missing_config_logs_warning(self, caplog):
         import logging
@@ -140,8 +156,7 @@ class TestEmailNotify:
     def test_smtp_error_logs_and_does_not_raise(self, mock_smtp_cls, caplog):
         import logging
 
-        mock_smtp_cls.return_value.__enter__ = MagicMock(side_effect=Exception("connection refused"))
-        mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_smtp_cls.return_value.starttls.side_effect = Exception("connection refused")
 
         with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
              patch.object(config_mod, "SMTP_PORT", 587), \
@@ -163,8 +178,7 @@ class TestEmailNotify:
     @patch("app.notifications.email.smtplib.SMTP")
     def test_html_and_plain_parts_present(self, mock_smtp_cls):
         mock_server = MagicMock()
-        mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
-        mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_smtp_cls.return_value = mock_server
 
         with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
              patch.object(config_mod, "SMTP_PORT", 587), \

@@ -79,9 +79,16 @@ def notify(updates: list[UpdateInfo]) -> None:
     msg.attach(MIMEText(html_body, "html"))
 
     try:
-        with smtplib.SMTP(_config.SMTP_HOST, _config.SMTP_PORT) as server:
+        if _config.SMTP_PORT == 465:
+            # Port 465: implicit SSL (SMTPS)
+            server = smtplib.SMTP_SSL(_config.SMTP_HOST, _config.SMTP_PORT)
+        else:
+            # Port 587 or other: plain connect, then optional STARTTLS
+            server = smtplib.SMTP(_config.SMTP_HOST, _config.SMTP_PORT)
             if _config.SMTP_TLS:
                 server.starttls()
+
+        with server:
             if _config.SMTP_USERNAME and _config.SMTP_PASSWORD:
                 server.login(_config.SMTP_USERNAME, _config.SMTP_PASSWORD)
             server.sendmail(_config.SMTP_FROM, _config.SMTP_TO, msg.as_string())
