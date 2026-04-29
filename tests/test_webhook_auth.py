@@ -11,6 +11,7 @@ from app.notifications.webhook import notify
 def _make_update():
     return UpdateInfo(
         container_name="test",
+        service_name="test",
         stack="stack",
         image="nginx",
         current_version="1.0.0",

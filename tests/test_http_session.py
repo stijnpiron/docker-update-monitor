@@ -93,6 +93,7 @@ class TestSessionIsReused:
              patch.object(config_mod, "DRY_RUN", False):
             notify([UpdateInfo(
                 container_name="test",
+                service_name="test",
                 stack="stack",
                 image="nginx",
                 current_version="1.0.0",
