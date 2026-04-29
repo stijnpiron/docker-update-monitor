@@ -67,6 +67,8 @@ def _fetch_ghcr_tags(image_name: str, github_token: str) -> list[str]:
                 if 'rel="next"' in part:
                     next_url = part.split(";")[0].strip().strip("<>")
                     break
+            if next_url and next_url.startswith("/"):
+                next_url = f"https://ghcr.io{next_url}"
             url = next_url
         except requests.HTTPError as exc:
             log.error(f"GHCR HTTP error for {owner}/{repo}: {exc}")
