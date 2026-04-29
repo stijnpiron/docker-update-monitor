@@ -7,6 +7,7 @@ from croniter import croniter
 
 import app.config as _config
 from app.scanner import run_check
+from app.health import start_health_server, update_state
 
 shutdown_requested = False
 
@@ -30,6 +31,8 @@ def main() -> None:
         _config.log.error(f"Invalid cron expression: '{_config.CRON_SCHEDULE}' — exiting")
         sys.exit(1)
 
+    start_health_server()
+
     _config.log.info(f"Schedule: '{_config.CRON_SCHEDULE}'")
 
     if _config.RUN_ON_STARTUP:
@@ -41,6 +44,7 @@ def main() -> None:
 
     cron = croniter(_config.CRON_SCHEDULE, datetime.now(timezone.utc))
     next_run = cron.get_next(datetime)
+    update_state(next_check=next_run)
     _config.log.info(f"Next check at: {next_run.strftime('%Y-%m-%dT%H:%M:%S %Z')}")
 
     while not shutdown_requested:
@@ -61,6 +65,7 @@ def main() -> None:
             break
 
         next_run = cron.get_next(datetime)
+        update_state(next_check=next_run)
         _config.log.info(f"Next check at: {next_run.strftime('%Y-%m-%dT%H:%M:%S %Z')}\n")
 
     _config.log.info("Shutting down gracefully")
