@@ -122,14 +122,21 @@ class TestRetryBehavior:
     @patch.object(http_mod, "http_session")
     def test_503_triggers_retry_on_ghcr_tags(self, mock_session):
         """Simulate that after retries, GHCR tags returns successfully."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"tags": ["v1.2.3"]}
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.headers = {"Link": ""}
-        mock_session.get.return_value = mock_resp
+        resp1 = MagicMock()
+        resp1.status_code = 200
+        resp1.json.return_value = [
+            {"metadata": {"container": {"tags": ["v1.2.3"]}}},
+        ]
+        resp1.raise_for_status = MagicMock()
 
-        with patch("app.registry.ghcr._get_ghcr_token", return_value="fake-token"):
-            tags = _fetch_ghcr_tags("ghcr.io/owner/repo", "gh-pat")
+        resp2 = MagicMock()
+        resp2.status_code = 200
+        resp2.json.return_value = []
+        resp2.raise_for_status = MagicMock()
+
+        mock_session.get.side_effect = [resp1, resp2]
+
+        tags = _fetch_ghcr_tags("ghcr.io/owner/repo", "gh-pat")
 
         assert "v1.2.3" in tags
         mock_session.get.assert_called()
