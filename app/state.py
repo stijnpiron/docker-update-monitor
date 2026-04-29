@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import app.config as _config
+from app.migrations import run_migrations
 from app.models import UpdateInfo
 
 _DB_PATH = Path(_config.STATE_DB_PATH)
@@ -32,6 +33,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(_DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
+    run_migrations(conn)
     conn.commit()
     return conn
 
