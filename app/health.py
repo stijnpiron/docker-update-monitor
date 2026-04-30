@@ -9,14 +9,19 @@ import app.config as _config
 _start_time = time.monotonic()
 
 _state_lock = threading.Lock()
-_state = {
+_state: dict = {
     "last_check": None,
     "next_check": None,
     "containers_monitored": 0,
+    "warnings": [],
+    "skipped_containers": [],
 }
 
 
-def update_state(*, last_check: datetime | None = None, next_check: datetime | None = None, containers_monitored: int | None = None) -> None:
+def update_state(*, last_check: datetime | None = None, next_check: datetime | None = None,
+                 containers_monitored: int | None = None,
+                 warnings: list[dict] | None = None,
+                 skipped_containers: list[dict] | None = None) -> None:
     with _state_lock:
         if last_check is not None:
             _state["last_check"] = last_check.isoformat().replace("+00:00", "Z")
@@ -24,6 +29,10 @@ def update_state(*, last_check: datetime | None = None, next_check: datetime | N
             _state["next_check"] = next_check.isoformat().replace("+00:00", "Z")
         if containers_monitored is not None:
             _state["containers_monitored"] = containers_monitored
+        if warnings is not None:
+            _state["warnings"] = warnings
+        if skipped_containers is not None:
+            _state["skipped_containers"] = skipped_containers
 
 
 def _build_response() -> tuple[int, dict]:
@@ -32,16 +41,19 @@ def _build_response() -> tuple[int, dict]:
         next_check = _state["next_check"]
         containers_monitored = _state["containers_monitored"]
 
-    if last_check is None:
-        return 503, {"status": "unavailable", "reason": "no check completed yet"}
-
-    return 200, {
+    body = {
         "status": "ok",
         "last_check": last_check,
         "next_check": next_check,
         "containers_monitored": containers_monitored,
         "uptime_seconds": int(time.monotonic() - _start_time),
     }
+
+    if last_check is None:
+        body["status"] = "starting"
+        body["note"] = "waiting for first scan to complete"
+
+    return 200, body
 
 
 class _HealthHandler(BaseHTTPRequestHandler):

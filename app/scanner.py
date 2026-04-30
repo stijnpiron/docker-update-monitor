@@ -41,6 +41,7 @@ def run_check() -> None:
     all_updates: list[UpdateInfo] = []
     all_mismatches: list[RegexMismatch] = []
     all_warnings: list[ScanWarning] = []
+    skipped_containers: list[dict] = []
     monitored_count = 0
 
     for container in containers:
@@ -49,6 +50,23 @@ def run_check() -> None:
 
         if not pattern:
             _config.log.debug(f"  [{container.name}] No '{_config.LABEL_PREFIX}.tag-regex' label — skipping")
+            # Determine image for display
+            skip_image = ""
+            if container.image.tags:
+                skip_image = container.image.tags[0]
+            else:
+                skip_image = container.attrs.get("Config", {}).get("Image", "")
+            skip_stack = (
+                labels.get(f"{_config.LABEL_PREFIX}.stack")
+                or labels.get("com.docker.compose.project")
+                or "standalone"
+            )
+            skipped_containers.append({
+                "container_name": container.name,
+                "stack": skip_stack,
+                "image": skip_image,
+                "reason": f"No '{_config.LABEL_PREFIX}.tag-regex' label",
+            })
             continue
 
         monitored_count += 1
@@ -171,4 +189,12 @@ def run_check() -> None:
         mark_notified(categorized, scan_time)
 
     # Update health endpoint state
-    update_state(last_check=scan_time, containers_monitored=monitored_count)
+    warnings_data = [
+        {"container_name": w.container_name, "image": w.image, "level": w.level, "message": w.message}
+        for w in all_warnings
+    ] + [
+        {"container_name": m.container_name, "image": m.image, "level": "warning", "message": m.reason}
+        for m in all_mismatches
+    ]
+    update_state(last_check=scan_time, containers_monitored=monitored_count,
+                 warnings=warnings_data, skipped_containers=skipped_containers)

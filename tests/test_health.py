@@ -39,10 +39,11 @@ def health_server():
 class TestHealthResponse:
     """Test the response building logic."""
 
-    def test_returns_503_before_first_check(self):
+    def test_returns_200_starting_before_first_check(self):
         status, body = health._build_response()
-        assert status == 503
-        assert body["status"] == "unavailable"
+        assert status == 200
+        assert body["status"] == "starting"
+        assert "waiting for first scan" in body["note"]
 
     def test_returns_200_after_check(self):
         now = datetime(2026, 4, 28, 3, 0, 0, tzinfo=timezone.utc)
@@ -70,16 +71,13 @@ class TestHealthResponse:
 class TestHealthEndpoint:
     """Integration tests hitting the actual HTTP server."""
 
-    def test_health_returns_503_no_check(self, health_server):
+    def test_health_returns_200_starting_no_check(self, health_server):
         url = f"http://127.0.0.1:{health_server}/health"
-        req = urllib.request.Request(url)
-        try:
-            urllib.request.urlopen(req)
-            assert False, "Expected HTTPError"
-        except urllib.error.HTTPError as e:
-            assert e.code == 503
-            body = json.loads(e.read())
-            assert body["status"] == "unavailable"
+        with urllib.request.urlopen(url) as resp:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+            assert body["status"] == "starting"
+            assert "waiting for first scan" in body["note"]
 
     def test_health_returns_200_after_check(self, health_server):
         now = datetime(2026, 4, 28, 3, 0, 0, tzinfo=timezone.utc)
