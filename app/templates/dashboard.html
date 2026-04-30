@@ -314,7 +314,10 @@
         <table id="updates-table">
             <thead>
                 <tr>
-                    <th data-col="0" class="sort-active">Stack <span class="sort-arrow">&#9650;</span></th>
+                    <th
+                        data-col="0"
+                        class="sort-active"
+                    >Stack <span class="sort-arrow">&#9650;</span></th>
                     <th data-col="1">Container <span class="sort-arrow">&#9650;</span></th>
                     <th data-col="2">Image <span class="sort-arrow">&#9650;</span></th>
                     <th data-col="3">Current <span class="sort-arrow">&#9650;</span></th>
@@ -345,7 +348,8 @@
 
         {% if skipped_containers %}
         <details class="skipped-section">
-            <summary class="section-heading section-heading--muted">Not Monitored ({{ skipped_containers|length }})</summary>
+            <summary class="section-heading section-heading--muted">Not Monitored ({{ skipped_containers|length }})
+            </summary>
             <table class="skipped-table">
                 <thead>
                     <tr>

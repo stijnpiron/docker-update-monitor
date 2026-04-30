@@ -45,6 +45,10 @@ def create_app() -> Flask:
             warnings = list(_state.get("warnings", []))
             skipped_containers = list(_state.get("skipped_containers", []))
 
+        # Format scan times for display
+        last_check_display = _format_datetime(last_check) if last_check else "never"
+        next_check_display = _format_datetime(next_check) if next_check else "—"
+
         # Sort skipped by stack then name
         skipped_containers.sort(key=lambda c: (c.get("stack") or "", c.get("container_name") or ""))
 
@@ -55,8 +59,8 @@ def create_app() -> Flask:
         return render_template(
             "dashboard.html",
             updates=updates,
-            last_check=last_check,
-            next_check=next_check,
+            last_check=last_check_display,
+            next_check=next_check_display,
             containers_monitored=containers_monitored,
             new_count=new_count,
             known_count=known_count,
