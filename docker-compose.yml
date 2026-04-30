@@ -54,6 +54,10 @@ services:
       # Log verbosity: DEBUG | INFO | WARNING | ERROR
       LOG_LEVEL: "INFO"
 
+    ports:
+      # Expose the web dashboard
+      - "8080:8080"
+
     volumes:
       # Read-only access to the Docker socket
       - /var/run/docker.sock:/var/run/docker.sock:ro

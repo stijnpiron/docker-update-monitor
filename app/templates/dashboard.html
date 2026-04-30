@@ -1,139 +1,287 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
     <title>Docker Update Monitor</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; padding: 1rem; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #1d4ed8; }
-        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
-        .card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); text-align: center; }
-        .card .value { font-size: 2rem; font-weight: 700; }
-        .card .label { font-size: 0.8rem; color: #64748b; margin-top: 0.25rem; }
-        .card--new .value { color: #dc2626; }
-        .card--known .value { color: #d97706; }
-        .card--resolved .value { color: #16a34a; }
-        .toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
-        .toolbar .meta { font-size: 0.8rem; color: #64748b; }
-        .btn { background: #1d4ed8; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-        .btn:hover { background: #1e40af; }
-        .btn:disabled { background: #94a3b8; cursor: not-allowed; }
-        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 0.85rem; }
-        th { background: #f1f5f9; font-weight: 600; color: #475569; white-space: nowrap; }
-        tr.status-new { background: #fef2f2; }
-        tr.status-new td:first-child { border-left: 3px solid #dc2626; }
-        tr.status-resolved { opacity: 0.5; }
-        .type-major { color: #dc2626; font-weight: 700; }
-        .type-minor { color: #d97706; font-weight: 700; }
-        .type-patch { color: #2563eb; font-weight: 700; }
-        .empty { text-align: center; padding: 2rem; color: #64748b; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f8fafc;
+            color: #1e293b;
+            padding: 1rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: #1d4ed8;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, .1);
+            text-align: center;
+        }
+
+        .card .value {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .card .label {
+            font-size: 0.8rem;
+            color: #64748b;
+            margin-top: 0.25rem;
+        }
+
+        .card--new .value {
+            color: #dc2626;
+        }
+
+        .card--known .value {
+            color: #d97706;
+        }
+
+        .card--resolved .value {
+            color: #16a34a;
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .toolbar .meta {
+            font-size: 0.8rem;
+            color: #64748b;
+        }
+
+        .btn {
+            background: #1d4ed8;
+            color: #fff;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .btn:hover {
+            background: #1e40af;
+        }
+
+        .btn:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #fff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, .1);
+        }
+
+        th,
+        td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+            font-size: 0.85rem;
+        }
+
+        th {
+            background: #f1f5f9;
+            font-weight: 600;
+            color: #475569;
+            white-space: nowrap;
+        }
+
+        tr.status-new {
+            background: #fef2f2;
+        }
+
+        tr.status-new td:first-child {
+            border-left: 3px solid #dc2626;
+        }
+
+        tr.status-resolved {
+            opacity: 0.5;
+        }
+
+        .type-major {
+            color: #dc2626;
+            font-weight: 700;
+        }
+
+        .type-minor {
+            color: #d97706;
+            font-weight: 700;
+        }
+
+        .type-patch {
+            color: #2563eb;
+            font-weight: 700;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 2rem;
+            color: #64748b;
+        }
+
         @media (max-width: 600px) {
-            table { font-size: 0.75rem; }
-            th, td { padding: 0.4rem; }
-            .cards { grid-template-columns: repeat(2, 1fr); }
+            table {
+                font-size: 0.75rem;
+            }
+
+            th,
+            td {
+                padding: 0.4rem;
+            }
+
+            .cards {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
     </style>
 </head>
+
 <body>
-<div class="container">
-    <h1>&#x1f433; Docker Update Monitor</h1>
+    <div class="container">
+        <h1>&#x1f433; Docker Update Monitor</h1>
 
-    <div class="cards">
-        <div class="card">
-            <div class="value">{{ containers_monitored }}</div>
-            <div class="label">Containers Monitored</div>
+        <div class="cards">
+            <div class="card">
+                <div class="value">{{ containers_monitored }}</div>
+                <div class="label">Containers Monitored</div>
+            </div>
+            <div class="card card--new">
+                <div class="value">{{ new_count }}</div>
+                <div class="label">New Updates</div>
+            </div>
+            <div class="card card--known">
+                <div class="value">{{ known_count }}</div>
+                <div class="label">Known Updates</div>
+            </div>
+            <div class="card card--resolved">
+                <div class="value">{{ resolved_count }}</div>
+                <div class="label">Resolved</div>
+            </div>
         </div>
-        <div class="card card--new">
-            <div class="value">{{ new_count }}</div>
-            <div class="label">New Updates</div>
+
+        <div class="toolbar">
+            <form
+                method="post"
+                action="/api/scan"
+                id="scan-form"
+            >
+                <button
+                    type="submit"
+                    class="btn"
+                    id="scan-btn"
+                >Scan Now</button>
+            </form>
+            <span class="meta">
+                Last scan: {{ last_check or "never" }} &nbsp;|&nbsp; Next scan: {{ next_check or "—" }}
+            </span>
         </div>
-        <div class="card card--known">
-            <div class="value">{{ known_count }}</div>
-            <div class="label">Known Updates</div>
-        </div>
-        <div class="card card--resolved">
-            <div class="value">{{ resolved_count }}</div>
-            <div class="label">Resolved</div>
-        </div>
+
+        {% if updates %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Container</th>
+                    <th>Stack</th>
+                    <th>Image</th>
+                    <th>Current</th>
+                    <th>New Version</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>First Seen</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in updates %}
+                <tr class="status-{{ u.status }}">
+                    <td>{{ u.container_name }}</td>
+                    <td>{{ u.stack }}</td>
+                    <td>{{ u.image }}</td>
+                    <td><code>{{ u.current_version }}</code></td>
+                    <td><code>{{ u.new_version }}</code></td>
+                    <td><span class="type-{{ u.update_type }}">{{ u.update_type }}</span></td>
+                    <td>{{ u.status }}</td>
+                    <td>{{ u.first_seen_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">No updates found. All containers are up to date.</div>
+        {% endif %}
     </div>
 
-    <div class="toolbar">
-        <form method="post" action="/api/scan" id="scan-form">
-            <button type="submit" class="btn" id="scan-btn">Scan Now</button>
-        </form>
-        <span class="meta">
-            Last scan: {{ last_check or "never" }} &nbsp;|&nbsp; Next scan: {{ next_check or "—" }}
-        </span>
-    </div>
+    <script>
+        // Progressive enhancement: auto-refresh and async scan
+        (function () {
+            var scanBtn = document.getElementById('scan-btn');
+            var scanForm = document.getElementById('scan-form');
 
-    {% if updates %}
-    <table>
-        <thead>
-            <tr>
-                <th>Container</th>
-                <th>Stack</th>
-                <th>Image</th>
-                <th>Current</th>
-                <th>New Version</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>First Seen</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for u in updates %}
-            <tr class="status-{{ u.status }}">
-                <td>{{ u.container_name }}</td>
-                <td>{{ u.stack }}</td>
-                <td>{{ u.image }}</td>
-                <td><code>{{ u.current_version }}</code></td>
-                <td><code>{{ u.new_version }}</code></td>
-                <td><span class="type-{{ u.update_type }}">{{ u.update_type }}</span></td>
-                <td>{{ u.status }}</td>
-                <td>{{ u.first_seen_at }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div class="empty">No updates found. All containers are up to date.</div>
-    {% endif %}
-</div>
+            if (scanForm && scanBtn) {
+                scanForm.addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    scanBtn.disabled = true;
+                    scanBtn.textContent = 'Scanning...';
+                    fetch('/api/scan', { method: 'POST' })
+                        .then(function () {
+                            setTimeout(function () { location.reload(); }, 3000);
+                        })
+                        .catch(function () {
+                            scanBtn.disabled = false;
+                            scanBtn.textContent = 'Scan Now';
+                        });
+                });
+            }
 
-<script>
-    // Progressive enhancement: auto-refresh and async scan
-    (function() {
-        var scanBtn = document.getElementById('scan-btn');
-        var scanForm = document.getElementById('scan-form');
-
-        if (scanForm && scanBtn) {
-            scanForm.addEventListener('submit', function(e) {
-                e.preventDefault();
-                scanBtn.disabled = true;
-                scanBtn.textContent = 'Scanning...';
-                fetch('/api/scan', { method: 'POST' })
-                    .then(function() {
-                        setTimeout(function() { location.reload(); }, 3000);
-                    })
-                    .catch(function() {
-                        scanBtn.disabled = false;
-                        scanBtn.textContent = 'Scan Now';
-                    });
-            });
-        }
-
-        // Poll for updates every 60 seconds
-        setInterval(function() {
-            fetch('/api/updates')
-                .then(function(r) { return r.json(); })
-                .then(function() { location.reload(); })
-                .catch(function() {});
-        }, 60000);
-    })();
-</script>
+            // Poll for updates every 60 seconds
+            setInterval(function () {
+                fetch('/api/updates')
+                    .then(function (r) { return r.json(); })
+                    .then(function () { location.reload(); })
+                    .catch(function () { });
+            }, 60000);
+        })();
+    </script>
 </body>
+
 </html>
