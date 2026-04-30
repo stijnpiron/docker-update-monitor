@@ -7,7 +7,7 @@
 ![GitHub Release](https://img.shields.io/github/v/release/stijnpiron/docker-update-monitor)
 ![License](https://img.shields.io/github/license/stijnpiron/docker-update-monitor)
 ![GitHub Issues](https://img.shields.io/github/issues/stijnpiron/docker-update-monitor)
-![Docker Image Size](https://img.shields.io/docker/image-size/ghcr.io/stijnpiron/docker-update-monitor?label=image%20size)
+![GHCR Image](https://ghcr-badge.egber.dev/stijnpiron/docker-update-monitor/size)
 
 Monitors all running Docker containers for image updates and POSTs a structured
 payload to a webhook when updates are found.
