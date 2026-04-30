@@ -3,10 +3,14 @@ from dataclasses import asdict
 
 import app.config as _config
 import app.http as _http
-from app.models import UpdateInfo
+from app.models import UpdateInfo, RegexMismatch, ScanWarning
 
 
-def _build_payload(updates: list[UpdateInfo]) -> dict:
+def _build_payload(
+    updates: list[UpdateInfo],
+    mismatches: list[RegexMismatch],
+    warnings: list[ScanWarning],
+) -> dict:
     """Group updates by status into a structured payload."""
     grouped: dict[str, list[dict]] = {"new": [], "known": [], "resolved": []}
     for u in updates:
@@ -14,14 +18,24 @@ def _build_payload(updates: list[UpdateInfo]) -> dict:
         del entry["status"]
         grouped.setdefault(u.status, []).append(entry)
     # Drop empty categories
-    return {k: v for k, v in grouped.items() if v}
+    payload = {k: v for k, v in grouped.items() if v}
+    if mismatches:
+        payload["regex_mismatches"] = [asdict(m) for m in mismatches]
+    if warnings:
+        payload["warnings"] = [asdict(w) for w in warnings]
+    return payload
 
 
-def notify(updates: list[UpdateInfo]) -> None:
-    if not updates:
+def notify(
+    updates: list[UpdateInfo],
+    *,
+    mismatches: list[RegexMismatch] | None = None,
+    warnings: list[ScanWarning] | None = None,
+) -> None:
+    if not updates and not mismatches and not warnings:
         return
 
-    payload = _build_payload(updates)
+    payload = _build_payload(updates, mismatches or [], warnings or [])
 
     if _config.DRY_RUN:
         _config.log.info("DRY_RUN — would POST:\n" + json.dumps(payload, indent=2))

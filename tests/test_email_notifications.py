@@ -209,7 +209,7 @@ class TestNotifyChannelsDispatch:
         updates = [_make_update()]
         with patch.object(config_mod, "NOTIFY_CHANNELS", ["webhook"]):
             dispatch(updates)
-        mock_webhook.assert_called_once_with(updates)
+        mock_webhook.assert_called_once_with(updates, mismatches=[], warnings=[])
         mock_email.assert_not_called()
 
     @patch("app.notifications.email_notify")
@@ -218,7 +218,7 @@ class TestNotifyChannelsDispatch:
         updates = [_make_update()]
         with patch.object(config_mod, "NOTIFY_CHANNELS", ["email"]):
             dispatch(updates)
-        mock_email.assert_called_once_with(updates)
+        mock_email.assert_called_once_with(updates, mismatches=[], warnings=[])
         mock_webhook.assert_not_called()
 
     @patch("app.notifications.email_notify")
@@ -227,8 +227,8 @@ class TestNotifyChannelsDispatch:
         updates = [_make_update()]
         with patch.object(config_mod, "NOTIFY_CHANNELS", ["webhook", "email"]):
             dispatch(updates)
-        mock_webhook.assert_called_once_with(updates)
-        mock_email.assert_called_once_with(updates)
+        mock_webhook.assert_called_once_with(updates, mismatches=[], warnings=[])
+        mock_email.assert_called_once_with(updates, mismatches=[], warnings=[])
 
     @patch("app.notifications.email_notify")
     @patch("app.notifications.webhook_notify")
