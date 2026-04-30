@@ -5,7 +5,7 @@ import docker
 from docker.errors import DockerException
 
 import app.config as _config
-from app.models import UpdateInfo
+from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
 from app.version import find_updates
@@ -39,6 +39,8 @@ def run_check() -> None:
     # run different versions of the same image.
     tags_cache: dict[tuple[str, str], list[str]] = {}
     all_updates: list[UpdateInfo] = []
+    all_mismatches: list[RegexMismatch] = []
+    all_warnings: list[ScanWarning] = []
     monitored_count = 0
 
     for container in containers:
@@ -54,7 +56,11 @@ def run_check() -> None:
         try:
             re.compile(pattern)
         except re.error as exc:
-            _config.log.warning(f"  [{container.name}] Invalid tag-regex '{pattern}': {exc} — skipping")
+            msg = f"Invalid tag-regex '{pattern}': {exc}"
+            _config.log.warning(f"  [{container.name}] {msg} — skipping")
+            all_warnings.append(ScanWarning(
+                container_name=container.name, image="", level="warning", message=msg,
+            ))
             continue
 
         # Resolve full image reference
@@ -66,7 +72,11 @@ def run_check() -> None:
             image_ref = container.attrs.get("Config", {}).get("Image", "")
 
         if not image_ref:
-            _config.log.warning(f"  [{container.name}] Cannot determine image reference — skipping")
+            msg = "Cannot determine image reference"
+            _config.log.warning(f"  [{container.name}] {msg} — skipping")
+            all_warnings.append(ScanWarning(
+                container_name=container.name, image="", level="warning", message=msg,
+            ))
             continue
 
         # Split into name + tag
@@ -99,7 +109,26 @@ def run_check() -> None:
 
         all_tags = tags_cache[cache_key]
         if not all_tags:
-            _config.log.warning(f"    No tags returned for {image_name} — skipping")
+            msg = f"No tags returned for {image_name}"
+            _config.log.warning(f"    {msg} — skipping")
+            all_warnings.append(ScanWarning(
+                container_name=container.name, image=image_name, level="warning", message=msg,
+            ))
+            continue
+
+        # Check if pattern matches current tag before attempting update detection
+        if not re.fullmatch(pattern, current_tag):
+            reason = f"Pattern '{pattern}' did not match current tag '{current_tag}'"
+            _config.log.warning(f"    {reason}")
+            all_mismatches.append(RegexMismatch(
+                container_name=container.name,
+                service_name=service_name,
+                stack=stack,
+                image=image_name,
+                current_tag=current_tag,
+                pattern=pattern,
+                reason=reason,
+            ))
             continue
 
         updates = find_updates(current_tag, all_tags, pattern)
@@ -121,6 +150,10 @@ def run_check() -> None:
 
     _config.log.info("-" * 60)
     _config.log.info(f"Check complete — {len(all_updates)} update(s) detected")
+    if all_mismatches:
+        _config.log.info(f"  Regex mismatches: {len(all_mismatches)}")
+    if all_warnings:
+        _config.log.info(f"  Warnings: {len(all_warnings)}")
 
     scan_time = datetime.now(timezone.utc)
 
@@ -133,7 +166,7 @@ def run_check() -> None:
     _config.log.info(f"  New: {new_count}  |  Known: {known_count}  |  Resolved: {resolved_count}")
 
     # Notify with all categorized updates (grouped by status in payload)
-    notify(categorized)
+    notify(categorized, mismatches=all_mismatches, warnings=all_warnings)
     if categorized:
         mark_notified(categorized, scan_time)
 
