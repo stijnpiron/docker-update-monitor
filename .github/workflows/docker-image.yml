@@ -14,6 +14,8 @@ on:
     branches:
       - main
       - dev
+  # manual trigger: build & push from any branch for testing
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -52,6 +54,8 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             # :dev on every push to dev branch
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            # :edge for manual dispatch builds (any branch)
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
             # :sha-abcdef1 for every commit (useful for pinning)
             type=sha,prefix=sha-
             # :1.2.3 and :1.2 and :1 from version tags (no v prefix)
@@ -64,6 +68,7 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
+          # pushes on: push to main/dev, tags, releases, and manual dispatch
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Cache layers between runs — dramatically speeds up rebuilds
