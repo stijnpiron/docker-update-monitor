@@ -161,12 +161,12 @@ class TestHealthRoute:
         assert data["status"] == "ok"
 
     @patch("app.dashboard._build_response")
-    def test_returns_503_before_first_check(self, mock_build, client):
-        mock_build.return_value = (503, {"status": "unavailable", "reason": "no check completed yet"})
+    def test_returns_200_starting_before_first_check(self, mock_build, client):
+        mock_build.return_value = (200, {"status": "starting", "note": "waiting for first scan to complete"})
         resp = client.get("/health")
-        assert resp.status_code == 503
+        assert resp.status_code == 200
         data = json.loads(resp.data)
-        assert data["status"] == "unavailable"
+        assert data["status"] == "starting"
 
 
 class TestDatetimeFormatting:

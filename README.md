@@ -228,10 +228,10 @@ Then open `http://<your-host>:8080` in a browser.
 
 ### Environment variable
 
-| Variable                   | Default          | Description                                           |
-| -------------------------- | ---------------- | ----------------------------------------------------- |
-| `WEB_PORT`                 | `8080`           | Port for the web dashboard                            |
-| `DASHBOARD_DATETIME_FORMAT`| `%d/%m/%Y %H:%M` | Python `strftime` format for dates on the dashboard  |
+| Variable                    | Default          | Description                                         |
+| --------------------------- | ---------------- | --------------------------------------------------- |
+| `WEB_PORT`                  | `8080`           | Port for the web dashboard                          |
+| `DASHBOARD_DATETIME_FORMAT` | `%d/%m/%Y %H:%M` | Python `strftime` format for dates on the dashboard |
 
 ---
 

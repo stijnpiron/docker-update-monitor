@@ -41,16 +41,19 @@ def _build_response() -> tuple[int, dict]:
         next_check = _state["next_check"]
         containers_monitored = _state["containers_monitored"]
 
-    if last_check is None:
-        return 503, {"status": "unavailable", "reason": "no check completed yet"}
-
-    return 200, {
+    body = {
         "status": "ok",
         "last_check": last_check,
         "next_check": next_check,
         "containers_monitored": containers_monitored,
         "uptime_seconds": int(time.monotonic() - _start_time),
     }
+
+    if last_check is None:
+        body["status"] = "starting"
+        body["note"] = "waiting for first scan to complete"
+
+    return 200, body
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
