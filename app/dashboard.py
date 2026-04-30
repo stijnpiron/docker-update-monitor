@@ -88,13 +88,15 @@ def create_app() -> Flask:
 
 
 def start_dashboard(host: str = "0.0.0.0", port: int | None = None) -> threading.Thread:
-    """Start the Flask dashboard in a daemon thread."""
+    """Start the Flask dashboard in a daemon thread using waitress."""
+    from waitress import serve
+
     if port is None:
         port = _config.WEB_PORT
 
     application = create_app()
     thread = threading.Thread(
-        target=lambda: application.run(host=host, port=port, use_reloader=False),
+        target=lambda: serve(application, host=host, port=port, _quiet=True),
         daemon=True,
     )
     thread.start()
