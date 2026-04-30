@@ -131,6 +131,7 @@ update-level finding for one container:
 | `DRY_RUN`            | `false`          | Log only, no notifications sent                                     |
 | `LABEL_PREFIX`       | `update-monitor` | Label namespace                                                     |
 | `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                              |
+| `WEB_PORT`           | `8080`           | Port for the web dashboard and health endpoint                      |
 
 ### Webhook channel
 
@@ -184,6 +185,53 @@ Only the highest candidate per level is reported.
 stat -c '%g' /var/run/docker.sock
 # Set DOCKER_GID in your .env to this value
 ```
+
+---
+
+## Web Dashboard
+
+The monitor includes a built-in web dashboard accessible on port `8080` (configurable via `WEB_PORT`).
+
+### Features
+
+- **Summary cards** — containers monitored, new/known/resolved update counts, warnings, not-monitored count
+- **Update table** — all detected updates with stack, container, image, versions, type, status, and first-seen date
+- **Sortable columns** — click any column header to sort; default sort is by stack
+- **Warnings section** — scan warnings and errors (invalid regex, missing tags, pattern mismatches)
+- **Not Monitored section** — collapsible list of containers without the `tag-regex` label, with reasons
+- **Scan Now button** — trigger an immediate scan from the UI
+- **Auto-refresh** — polls for changes every 60 seconds
+- **Responsive** — works on desktop and mobile
+- **No JavaScript required** — dashboard renders fully server-side (JS enhances with sorting, async scan + auto-refresh)
+
+### Accessing the dashboard
+
+Expose port `8080` (or your custom `WEB_PORT`) in your `docker-compose.yml`:
+
+```yaml
+services:
+  docker-update-monitor:
+    ports:
+      - "8080:8080"
+```
+
+Then open `http://<your-host>:8080` in a browser.
+
+### API endpoints
+
+| Method | Path           | Description                                      |
+| ------ | -------------- | ------------------------------------------------ |
+| `GET`  | `/`            | Dashboard page (HTML)                            |
+| `GET`  | `/health`      | Health check (JSON) — used by Docker HEALTHCHECK |
+| `GET`  | `/api/updates` | All updates with status as JSON array            |
+| `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted     |
+
+### Environment variable
+
+| Variable                    | Default          | Description                                         |
+| --------------------------- | ---------------- | --------------------------------------------------- |
+| `WEB_PORT`                  | `8080`           | Port for the web dashboard                          |
+| `DASHBOARD_DATETIME_FORMAT` | `%d/%m/%Y %H:%M` | Python `strftime` format for dates on the dashboard |
 
 ---
 

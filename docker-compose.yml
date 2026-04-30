@@ -54,6 +54,14 @@ services:
       # Log verbosity: DEBUG | INFO | WARNING | ERROR
       LOG_LEVEL: "INFO"
 
+      # Dashboard datetime display format (Python strftime)
+      # Examples: "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%b %d, %Y %I:%M %p"
+      DASHBOARD_DATETIME_FORMAT: "${DASHBOARD_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
+
+    ports:
+      # Expose the web dashboard
+      - "8080:8080"
+
     volumes:
       # Read-only access to the Docker socket
       - /var/run/docker.sock:/var/run/docker.sock:ro

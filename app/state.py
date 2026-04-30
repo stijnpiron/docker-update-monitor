@@ -165,3 +165,26 @@ def get_active_updates() -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def get_all_updates() -> list[dict]:
+    """Return all update rows (active and resolved) as dicts with a 'status' field."""
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM updates ORDER BY first_seen_at"
+        ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("resolved_at"):
+                d["status"] = "resolved"
+            elif d.get("notified_at"):
+                d["status"] = "known"
+            else:
+                d["status"] = "new"
+            result.append(d)
+        return result
+    finally:
+        conn.close()

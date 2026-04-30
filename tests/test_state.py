@@ -174,3 +174,72 @@ class TestMarkNotified:
         rows = state.get_active_updates()
         # Should keep the first notified_at
         assert rows[0]["notified_at"] == t1.isoformat()
+
+
+class TestProcessScanDefaultTime:
+    def test_process_scan_uses_current_time_when_none(self):
+        u = _make_update()
+        result = state.process_scan([u])
+        assert len(result) == 1
+        assert result[0].status == "new"
+
+
+class TestMarkNotifiedDefaultTime:
+    def test_mark_notified_uses_current_time_when_none(self):
+        u = _make_update()
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        result = state.process_scan([u], scan_time=t)
+        state.mark_notified(result)
+        rows = state.get_active_updates()
+        assert rows[0]["notified_at"] is not None
+
+
+class TestGetAllUpdates:
+    def test_returns_empty_list_when_no_data(self):
+        result = state.get_all_updates()
+        assert result == []
+
+    def test_returns_new_update(self):
+        u = _make_update()
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        state.process_scan([u], scan_time=t)
+
+        result = state.get_all_updates()
+        assert len(result) == 1
+        assert result[0]["status"] == "new"
+        assert result[0]["container_name"] == "web"
+
+    def test_returns_known_update(self):
+        u = _make_update()
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        result = state.process_scan([u], scan_time=t)
+        state.mark_notified(result, notified_time=t)
+
+        all_updates = state.get_all_updates()
+        assert len(all_updates) == 1
+        assert all_updates[0]["status"] == "known"
+
+    def test_returns_resolved_update(self):
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        state.process_scan([u], scan_time=t1)
+        state.process_scan([], scan_time=t2)
+
+        all_updates = state.get_all_updates()
+        assert len(all_updates) == 1
+        assert all_updates[0]["status"] == "resolved"
+
+    def test_returns_multiple_statuses(self):
+        u1 = _make_update(new_version="1.1.0", update_type="minor")
+        u2 = _make_update(new_version="2.0.0", update_type="major")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        result = state.process_scan([u1, u2], scan_time=t1)
+        state.mark_notified(result, notified_time=t1)
+        state.process_scan([u1], scan_time=t2)
+
+        all_updates = state.get_all_updates()
+        statuses = {u["status"] for u in all_updates}
+        assert statuses == {"known", "resolved"}
