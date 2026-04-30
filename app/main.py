@@ -7,7 +7,8 @@ from croniter import croniter
 
 import app.config as _config
 from app.scanner import run_check
-from app.health import start_health_server, update_state
+from app.health import update_state
+from app.dashboard import start_dashboard, _scan_trigger
 
 shutdown_requested = False
 
@@ -31,7 +32,7 @@ def main() -> None:
         _config.log.error(f"Invalid cron expression: '{_config.CRON_SCHEDULE}' — exiting")
         sys.exit(1)
 
-    start_health_server()
+    start_dashboard()
 
     _config.log.info(f"Schedule: '{_config.CRON_SCHEDULE}'")
 
@@ -51,22 +52,37 @@ def main() -> None:
         now = datetime.now(timezone.utc)
         wait = (next_run - now).total_seconds()
 
-        # Sleep in 1-second intervals to allow prompt shutdown
+        # Sleep in 1-second intervals to allow prompt shutdown and scan triggers
+        triggered = False
         while wait > 0 and not shutdown_requested:
+            if _scan_trigger.is_set():
+                _scan_trigger.clear()
+                _config.log.info("Manual scan triggered via dashboard")
+                run_check()
+                triggered = True
+                if shutdown_requested:
+                    break
+                # Recalculate next scheduled run
+                next_run = cron.get_next(datetime)
+                update_state(next_check=next_run)
+                _config.log.info(f"Next check at: {next_run.strftime('%Y-%m-%dT%H:%M:%S %Z')}\n")
+                break
             time.sleep(min(wait, 1.0))
             wait -= 1.0
 
         if shutdown_requested:
             break
 
-        run_check()
+        # Run scheduled check if the sleep loop completed normally (not a manual trigger)
+        if not triggered:
+            run_check()
 
-        if shutdown_requested:
-            break
+            if shutdown_requested:
+                break
 
-        next_run = cron.get_next(datetime)
-        update_state(next_check=next_run)
-        _config.log.info(f"Next check at: {next_run.strftime('%Y-%m-%dT%H:%M:%S %Z')}\n")
+            next_run = cron.get_next(datetime)
+            update_state(next_check=next_run)
+            _config.log.info(f"Next check at: {next_run.strftime('%Y-%m-%dT%H:%M:%S %Z')}\n")
 
     _config.log.info("Shutting down gracefully")
     sys.exit(0)
