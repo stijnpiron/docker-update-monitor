@@ -1,5 +1,13 @@
 # Docker Update Monitor
 
+![GitHub Release](https://img.shields.io/github/v/release/stijnpiron/docker-update-monitor)
+
+![Build & Push Docker Image](https://github.com/stijnpiron/docker-update-monitor/actions/workflows/docker-image.yml/badge.svg)
+![Tests](https://github.com/stijnpiron/docker-update-monitor/actions/workflows/tests.yml/badge.svg)
+![Coverage](https://github.com/stijnpiron/docker-update-monitor/actions/workflows/coverage.yml/badge.svg)
+![CodeQL](https://github.com/stijnpiron/docker-update-monitor/actions/workflows/codeql.yml/badge.svg)
+![GitHub Issues](https://img.shields.io/github/issues/stijnpiron/docker-update-monitor)
+
 Monitors all running Docker containers for image updates and POSTs a structured
 payload to a webhook when updates are found.
 
