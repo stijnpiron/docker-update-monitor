@@ -1,6 +1,7 @@
 """Flask web dashboard for Docker Update Monitor."""
 
 import threading
+from datetime import datetime
 
 from flask import Flask, jsonify, render_template
 
@@ -11,6 +12,17 @@ from app.state import get_all_updates
 _scan_trigger = threading.Event()
 
 
+def _format_datetime(iso_str: str | None) -> str:
+    """Format an ISO datetime string using the configured display format."""
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime(_config.DASHBOARD_DATETIME_FORMAT)
+    except (ValueError, TypeError):
+        return iso_str
+
+
 def create_app() -> Flask:
     """Create and configure the Flask application."""
     application = Flask(__name__, template_folder="templates")
@@ -18,10 +30,23 @@ def create_app() -> Flask:
     @application.route("/")
     def dashboard():
         updates = get_all_updates()
+
+        # Format first_seen_at for display
+        for u in updates:
+            u["first_seen_at_display"] = _format_datetime(u.get("first_seen_at"))
+
+        # Sort by stack (default)
+        updates.sort(key=lambda u: (u.get("stack") or "", u.get("container_name") or ""))
+
         with _state_lock:
             last_check = _state.get("last_check")
             next_check = _state.get("next_check")
             containers_monitored = _state.get("containers_monitored", 0)
+            warnings = list(_state.get("warnings", []))
+            skipped_containers = list(_state.get("skipped_containers", []))
+
+        # Sort skipped by stack then name
+        skipped_containers.sort(key=lambda c: (c.get("stack") or "", c.get("container_name") or ""))
 
         new_count = sum(1 for u in updates if u["status"] == "new")
         known_count = sum(1 for u in updates if u["status"] == "known")
@@ -36,6 +61,8 @@ def create_app() -> Flask:
             new_count=new_count,
             known_count=known_count,
             resolved_count=resolved_count,
+            warnings=warnings,
+            skipped_containers=skipped_containers,
         )
 
     @application.route("/health")

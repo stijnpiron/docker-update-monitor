@@ -216,12 +216,12 @@ Then open `http://<your-host>:8080` in a browser.
 
 ### API endpoints
 
-| Method | Path           | Description                                    |
-| ------ | -------------- | ---------------------------------------------- |
-| `GET`  | `/`            | Dashboard page (HTML)                          |
+| Method | Path           | Description                                      |
+| ------ | -------------- | ------------------------------------------------ |
+| `GET`  | `/`            | Dashboard page (HTML)                            |
 | `GET`  | `/health`      | Health check (JSON) — used by Docker HEALTHCHECK |
-| `GET`  | `/api/updates` | All updates with status as JSON array          |
-| `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted   |
+| `GET`  | `/api/updates` | All updates with status as JSON array            |
+| `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted     |
 
 ### Environment variable
 

@@ -5,7 +5,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.dashboard import create_app, _scan_trigger
+from app import config as config_mod
+from app.dashboard import create_app, _scan_trigger, _format_datetime
 
 
 @pytest.fixture
@@ -166,3 +167,148 @@ class TestHealthRoute:
         assert resp.status_code == 503
         data = json.loads(resp.data)
         assert data["status"] == "unavailable"
+
+
+class TestDatetimeFormatting:
+    """Tests for _format_datetime and DASHBOARD_DATETIME_FORMAT."""
+
+    def test_default_format(self):
+        result = _format_datetime("2026-04-30T10:30:00")
+        assert result == "30/04/2026 10:30"
+
+    def test_custom_format(self):
+        with patch.object(config_mod, "DASHBOARD_DATETIME_FORMAT", "%Y-%m-%d %H:%M:%S"):
+            result = _format_datetime("2026-04-30T10:30:45")
+        assert result == "2026-04-30 10:30:45"
+
+    def test_none_returns_dash(self):
+        assert _format_datetime(None) == "—"
+
+    def test_empty_string_returns_dash(self):
+        assert _format_datetime("") == "—"
+
+    def test_invalid_iso_returns_raw(self):
+        assert _format_datetime("not-a-date") == "not-a-date"
+
+    @patch("app.dashboard.get_all_updates")
+    def test_formatted_date_in_dashboard(self, mock_updates, client):
+        mock_updates.return_value = [
+            {"container_name": "app", "service_name": "", "stack": "s", "image": "img", "current_version": "1.0", "new_version": "2.0", "update_type": "major", "status": "new", "first_seen_at": "2026-04-30T14:05:00"},
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "30/04/2026 14:05" in html
+
+
+class TestTableSorting:
+    """Tests for default sort order (by stack)."""
+
+    @patch("app.dashboard.get_all_updates")
+    def test_sorted_by_stack_then_container(self, mock_updates, client):
+        mock_updates.return_value = [
+            {"container_name": "zzz", "service_name": "", "stack": "beta", "image": "img", "current_version": "1.0", "new_version": "2.0", "update_type": "major", "status": "new", "first_seen_at": "2026-04-30T10:00:00"},
+            {"container_name": "aaa", "service_name": "", "stack": "alpha", "image": "img", "current_version": "1.0", "new_version": "2.0", "update_type": "major", "status": "new", "first_seen_at": "2026-04-30T10:00:00"},
+            {"container_name": "bbb", "service_name": "", "stack": "alpha", "image": "img2", "current_version": "1.0", "new_version": "2.0", "update_type": "minor", "status": "known", "first_seen_at": "2026-04-30T09:00:00"},
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        # alpha should appear before beta
+        alpha_pos = html.index("alpha")
+        beta_pos = html.index("beta")
+        assert alpha_pos < beta_pos
+        # within alpha, aaa before bbb
+        aaa_pos = html.index("aaa")
+        bbb_pos = html.index("bbb")
+        assert aaa_pos < bbb_pos
+
+    @patch("app.dashboard.get_all_updates")
+    def test_table_has_sortable_headers(self, mock_updates, client):
+        mock_updates.return_value = [
+            {"container_name": "app", "service_name": "", "stack": "s", "image": "img", "current_version": "1.0", "new_version": "2.0", "update_type": "major", "status": "new", "first_seen_at": "2026-04-30T10:00:00"},
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert 'data-col="0"' in html
+        assert "sort-arrow" in html
+
+
+class TestWarningsDisplay:
+    """Tests for warnings shown on the dashboard."""
+
+    @patch("app.dashboard.get_all_updates")
+    def test_warnings_shown_when_present(self, mock_updates, client):
+        mock_updates.return_value = []
+        from app.health import _state, _state_lock
+        with _state_lock:
+            _state["warnings"] = [
+                {"container_name": "broken", "image": "nginx", "level": "warning", "message": "Invalid tag-regex '(': missing )"},
+            ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "Warnings" in html
+        assert "broken" in html
+        assert "Invalid tag-regex" in html
+        # cleanup
+        with _state_lock:
+            _state["warnings"] = []
+
+    @patch("app.dashboard.get_all_updates")
+    def test_no_warnings_section_when_empty(self, mock_updates, client):
+        mock_updates.return_value = []
+        from app.health import _state, _state_lock
+        with _state_lock:
+            _state["warnings"] = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert '<table class="warnings-table">' not in html
+
+
+class TestSkippedContainersDisplay:
+    """Tests for not-monitored containers on the dashboard."""
+
+    @patch("app.dashboard.get_all_updates")
+    def test_skipped_containers_shown(self, mock_updates, client):
+        mock_updates.return_value = []
+        from app.health import _state, _state_lock
+        with _state_lock:
+            _state["skipped_containers"] = [
+                {"container_name": "redis-cache", "stack": "infra", "image": "redis:7", "reason": "No 'docker-update-monitor.tag-regex' label"},
+                {"container_name": "postgres-db", "stack": "app", "image": "postgres:16", "reason": "No 'docker-update-monitor.tag-regex' label"},
+            ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "Not Monitored" in html
+        assert "redis-cache" in html
+        assert "postgres-db" in html
+        assert "No &#39;docker-update-monitor.tag-regex&#39; label" in html
+        # cleanup
+        with _state_lock:
+            _state["skipped_containers"] = []
+
+    @patch("app.dashboard.get_all_updates")
+    def test_skipped_sorted_by_stack(self, mock_updates, client):
+        mock_updates.return_value = []
+        from app.health import _state, _state_lock
+        with _state_lock:
+            _state["skipped_containers"] = [
+                {"container_name": "z-app", "stack": "zebra", "image": "img:1", "reason": "no label"},
+                {"container_name": "a-app", "stack": "alpha", "image": "img:2", "reason": "no label"},
+            ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        alpha_pos = html.index("alpha")
+        zebra_pos = html.index("zebra")
+        assert alpha_pos < zebra_pos
+        # cleanup
+        with _state_lock:
+            _state["skipped_containers"] = []
+
+    @patch("app.dashboard.get_all_updates")
+    def test_no_skipped_section_when_empty(self, mock_updates, client):
+        mock_updates.return_value = []
+        from app.health import _state, _state_lock
+        with _state_lock:
+            _state["skipped_containers"] = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert '<table class="skipped-table">' not in html
