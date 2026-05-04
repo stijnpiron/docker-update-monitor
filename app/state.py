@@ -28,12 +28,20 @@ CREATE TABLE IF NOT EXISTS updates (
 );
 """
 
+_METADATA_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 
 def _connect() -> sqlite3.Connection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
+    conn.execute(_METADATA_SCHEMA)
     run_migrations(conn)
     conn.commit()
     return conn
@@ -227,5 +235,30 @@ def get_all_updates() -> list[dict]:
                 d["status"] = "new"
             result.append(d)
         return result
+    finally:
+        conn.close()
+
+
+def save_last_check(iso_timestamp: str) -> None:
+    """Persist the last scan timestamp to the database."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_check', ?)",
+            (iso_timestamp,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_last_check() -> str | None:
+    """Load the persisted last scan timestamp from the database."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM metadata WHERE key = 'last_check'"
+        ).fetchone()
+        return row[0] if row else None
     finally:
         conn.close()

@@ -60,6 +60,7 @@ def create_app() -> Flask:
             "dashboard.html",
             updates=updates,
             last_check=last_check_display,
+            last_check_raw=last_check or "",
             next_check=next_check_display,
             containers_monitored=containers_monitored,
             new_count=new_count,

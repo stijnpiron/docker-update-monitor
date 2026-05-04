@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import app.config as _config
+from app.state import save_last_check
 
 _start_time = time.monotonic()
 
@@ -24,7 +25,9 @@ def update_state(*, last_check: datetime | None = None, next_check: datetime | N
                  skipped_containers: list[dict] | None = None) -> None:
     with _state_lock:
         if last_check is not None:
-            _state["last_check"] = last_check.isoformat().replace("+00:00", "Z")
+            iso = last_check.isoformat().replace("+00:00", "Z")
+            _state["last_check"] = iso
+            save_last_check(iso)
         if next_check is not None:
             _state["next_check"] = next_check.isoformat().replace("+00:00", "Z")
         if containers_monitored is not None:

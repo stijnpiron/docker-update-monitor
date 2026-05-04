@@ -215,8 +215,15 @@
         }
 
         @keyframes slideDown {
-            from { opacity: 0; transform: translateX(-50%) translateY(-1rem); }
-            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-1rem);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
         }
 
         .card--warnings .value {
@@ -282,7 +289,10 @@
 </head>
 
 <body>
-    <div class="update-banner" id="update-banner">
+    <div
+        class="update-banner"
+        id="update-banner"
+    >
         <span>&#x1f504; New scan results available</span>
         <button onclick="location.reload()">Refresh</button>
     </div>
@@ -496,7 +506,7 @@
             }
 
             // --- Poll for new scan results ---
-            var lastCheck = '{{ last_check }}';
+            var lastCheck = '{{ last_check_raw }}';
             var banner = document.getElementById('update-banner');
 
             function pollForScanUpdate() {
