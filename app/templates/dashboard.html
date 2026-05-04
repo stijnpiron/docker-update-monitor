@@ -176,6 +176,49 @@
             color: #64748b;
         }
 
+        .update-banner {
+            display: none;
+            position: fixed;
+            top: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1d4ed8;
+            color: #fff;
+            padding: 0.75rem 1.25rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+            z-index: 1000;
+            font-size: 0.9rem;
+            display: none;
+            align-items: center;
+            gap: 0.75rem;
+            animation: slideDown 0.3s ease-out;
+        }
+
+        .update-banner.visible {
+            display: flex;
+        }
+
+        .update-banner button {
+            background: #fff;
+            color: #1d4ed8;
+            border: none;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .update-banner button:hover {
+            background: #e0e7ff;
+        }
+
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateX(-50%) translateY(-1rem); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+
         .card--warnings .value {
             color: #d97706;
         }
@@ -239,6 +282,10 @@
 </head>
 
 <body>
+    <div class="update-banner" id="update-banner">
+        <span>&#x1f504; New scan results available</span>
+        <button onclick="location.reload()">Refresh</button>
+    </div>
     <div class="container">
         <h1>&#x1f433; Docker Update Monitor</h1>
 
@@ -439,7 +486,7 @@
                     scanBtn.textContent = 'Scanning...';
                     fetch('/api/scan', { method: 'POST' })
                         .then(function () {
-                            setTimeout(function () { location.reload(); }, 3000);
+                            scanBtn.textContent = 'Scan triggered';
                         })
                         .catch(function () {
                             scanBtn.disabled = false;
@@ -448,13 +495,28 @@
                 });
             }
 
-            // Poll for updates every 60 seconds
-            setInterval(function () {
-                fetch('/api/updates')
+            // --- Poll for new scan results ---
+            var lastCheck = '{{ last_check }}';
+            var banner = document.getElementById('update-banner');
+
+            function pollForScanUpdate() {
+                fetch('/api/last-scan')
                     .then(function (r) { return r.json(); })
-                    .then(function () { location.reload(); })
+                    .then(function (data) {
+                        var serverCheck = data.last_check || '';
+                        if (serverCheck && serverCheck !== lastCheck) {
+                            banner.classList.add('visible');
+                            // Re-enable scan button if it was disabled
+                            if (scanBtn) {
+                                scanBtn.disabled = false;
+                                scanBtn.textContent = 'Scan Now';
+                            }
+                        }
+                    })
                     .catch(function () { });
-            }, 60000);
+            }
+
+            setInterval(pollForScanUpdate, 10000);
         })();
     </script>
 </body>

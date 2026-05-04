@@ -214,8 +214,9 @@ def notify(
         _config.log.warning("SMTP not fully configured (SMTP_HOST, SMTP_FROM, SMTP_TO required) — skipping email notification.")
         return
 
-    total = len(updates)
-    subject = f"\U0001f433 Docker Update Monitor \u2013 {total} image update{'s' if total > 1 else ''}"
+    new, known, resolved = _split_by_status(updates)
+    total = len(_dedup(new)) + len(_dedup(known)) + len(_dedup(resolved))
+    subject = f"\U0001f433 Docker Update Monitor \u2013 {total} image update{'s' if total != 1 else ''}"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject

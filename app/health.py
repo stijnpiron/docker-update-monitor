@@ -30,9 +30,9 @@ def update_state(*, last_check: datetime | None = None, next_check: datetime | N
         if containers_monitored is not None:
             _state["containers_monitored"] = containers_monitored
         if warnings is not None:
-            _state["warnings"] = warnings
+            _state["warnings"] = list(warnings)
         if skipped_containers is not None:
-            _state["skipped_containers"] = skipped_containers
+            _state["skipped_containers"] = list(skipped_containers)
 
 
 def _build_response() -> tuple[int, dict]:

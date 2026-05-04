@@ -67,6 +67,24 @@ class TestHealthResponse:
             assert health._state["last_check"] == "2026-04-28T03:00:00Z"
             assert health._state["containers_monitored"] == 5
 
+    def test_update_state_warnings_not_mutated_by_caller(self):
+        """Verify that modifying the list after update_state doesn't affect internal state."""
+        warnings = [{"container_name": "app", "message": "warn"}]
+        health.update_state(warnings=warnings)
+        # Mutate the original list
+        warnings.append({"container_name": "evil", "message": "injected"})
+
+        with health._state_lock:
+            # State should not have the injected entry
+            assert len(health._state["warnings"]) == 1
+
+    def test_update_state_stores_skipped_containers(self):
+        skipped = [{"container_name": "x", "stack": "s", "image": "img", "reason": "no label"}]
+        health.update_state(skipped_containers=skipped)
+
+        with health._state_lock:
+            assert health._state["skipped_containers"] == skipped
+
 
 class TestHealthEndpoint:
     """Integration tests hitting the actual HTTP server."""
