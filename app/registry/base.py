@@ -22,7 +22,8 @@ def detect_registry(image_name: str) -> str:
     if "/" not in image_name:
         return "dockerhub"
     # Two-part names like "linuxserver/sonarr" are DockerHub namespaced images
+    # but only if the first part has no dot AND no colon (port means it's a registry address)
     parts = image_name.split("/")
-    if len(parts) == 2 and "." not in parts[0]:
+    if len(parts) == 2 and "." not in parts[0] and ":" not in parts[0]:
         return "dockerhub"
     return "unknown"

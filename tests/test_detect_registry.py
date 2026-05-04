@@ -67,6 +67,19 @@ class TestDetectRegistryUnknown:
         assert detect_registry("my.registry.local/app") == "unknown"
 
 
+class TestDetectRegistryLocalRegistry:
+    """Local registries with ports should not be mistaken for DockerHub."""
+
+    def test_localhost_with_port(self):
+        assert detect_registry("localhost:5000/image") == "unknown"
+
+    def test_hostname_with_port(self):
+        assert detect_registry("myhost:5000/myapp") == "unknown"
+
+    def test_ip_with_port(self):
+        assert detect_registry("192.168.1.1:5000/image") == "unknown"
+
+
 class TestDetectRegistryURL:
     """Images specified as full URLs (with scheme)."""
 
