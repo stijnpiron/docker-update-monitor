@@ -312,3 +312,41 @@ class TestSkippedContainersDisplay:
         resp = client.get("/")
         html = resp.data.decode()
         assert '<table class="skipped-table">' not in html
+
+
+class TestApiLastScanRoute:
+    """Tests for GET /api/last-scan"""
+
+    def test_returns_null_before_first_scan(self, client):
+        from app.health import _state, _state_lock
+        with _state_lock:
+            original = _state.get("last_check")
+            _state["last_check"] = None
+        resp = client.get("/api/last-scan")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data == {"last_check": None}
+        with _state_lock:
+            _state["last_check"] = original
+
+    def test_returns_last_check_timestamp(self, client):
+        from app.health import _state, _state_lock
+        with _state_lock:
+            original = _state.get("last_check")
+            _state["last_check"] = "2026-04-30T12:00:00Z"
+        resp = client.get("/api/last-scan")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data == {"last_check": "2026-04-30T12:00:00Z"}
+        with _state_lock:
+            _state["last_check"] = original
+
+    def test_update_banner_in_dashboard_html(self, client):
+        from app.health import _state, _state_lock
+        from unittest.mock import patch as _p
+        with _p("app.dashboard.get_all_updates", return_value=[]):
+            resp = client.get("/")
+        html = resp.data.decode()
+        assert 'id="update-banner"' in html
+        assert "New scan results available" in html
+        assert "/api/last-scan" in html

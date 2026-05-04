@@ -84,6 +84,12 @@ def create_app() -> Flask:
         _scan_trigger.set()
         return jsonify({"message": "Scan triggered"}), 202
 
+    @application.route("/api/last-scan")
+    def api_last_scan():
+        with _state_lock:
+            last_check = _state.get("last_check")
+        return jsonify({"last_check": last_check})
+
     return application
 
 

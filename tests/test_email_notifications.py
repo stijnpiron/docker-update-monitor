@@ -208,6 +208,31 @@ class TestEmailNotify:
         assert "text/plain" in raw_email
         assert "text/html" in raw_email
 
+    @patch("app.notifications.email.smtplib.SMTP")
+    def test_subject_count_uses_deduped_total(self, mock_smtp_cls):
+        """Subject count should match body count after dedup."""
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+
+        updates = [
+            _make_update(container_name="app1", image="nginx", update_type="minor", status="known"),
+            _make_update(container_name="app2", image="nginx", update_type="minor", status="known"),
+            _make_update(container_name="app3", image="redis", update_type="patch", status="known"),
+        ]
+
+        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
+             patch.object(config_mod, "SMTP_PORT", 587), \
+             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
+             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
+             patch.object(config_mod, "SMTP_TLS", False), \
+             patch.object(config_mod, "SMTP_USERNAME", ""), \
+             patch.object(config_mod, "SMTP_PASSWORD", ""):
+            email_notify(updates)
+
+        raw_email = mock_server.sendmail.call_args[0][2]
+        # 3 raw updates, but nginx+minor deduplicates to 1, so total = 2
+        assert "2_image_updates" in raw_email  # Q-encoded subject
+
 
 class TestNotifyChannelsDispatch:
     """Tests for the channel dispatcher."""
@@ -478,3 +503,109 @@ class TestNotifyWithMismatchesAndWarnings:
             email_notify([], warnings=[_make_warning()])
 
         mock_server.sendmail.assert_called_once()
+
+
+class TestSubjectEdgeCases:
+    @patch("app.notifications.email.smtplib.SMTP")
+    def test_subject_singular_with_one_update(self, mock_smtp_cls):
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+
+        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
+             patch.object(config_mod, "SMTP_PORT", 587), \
+             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
+             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
+             patch.object(config_mod, "SMTP_TLS", False), \
+             patch.object(config_mod, "SMTP_USERNAME", ""), \
+             patch.object(config_mod, "SMTP_PASSWORD", ""):
+            email_notify([_make_update()])
+
+        raw_email = mock_server.sendmail.call_args[0][2]
+        assert "1_image_update?=" in raw_email  # singular, Q-encoded
+
+    @patch("app.notifications.email.smtplib.SMTP")
+    def test_subject_zero_when_only_mismatches(self, mock_smtp_cls):
+        """When only mismatches/warnings are sent, subject says '0 image updates' (plural)."""
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+
+        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
+             patch.object(config_mod, "SMTP_PORT", 587), \
+             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
+             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
+             patch.object(config_mod, "SMTP_TLS", False), \
+             patch.object(config_mod, "SMTP_USERNAME", ""), \
+             patch.object(config_mod, "SMTP_PASSWORD", ""):
+            email_notify([], mismatches=[_make_mismatch()])
+
+        raw_email = mock_server.sendmail.call_args[0][2]
+        assert "0_image_updates" in raw_email  # Q-encoded, plural for zero
+
+
+class TestBuildRowsEdgeCases:
+    def test_service_name_fallback_to_container_name(self):
+        html = _build_html([_make_update(service_name=None, container_name="my-container")])
+        # service_name is None, so container_name should appear in both Service and Container columns
+        assert "my-container" in html
+
+    def test_current_version_none_shows_dash(self):
+        html = _build_html([_make_update(current_version=None)])
+        assert "\u2014" in html  # em dash fallback
+
+    def test_unknown_update_type_uses_gray_color(self):
+        html = _build_html([_make_update(update_type="unknown")])
+        assert "#6b7280" in html  # gray fallback color
+
+    def test_plain_service_name_fallback(self):
+        text = _build_plain([_make_update(service_name=None, container_name="my-container")])
+        assert "my-container (my-container)" in text
+
+
+class TestBuildHtmlDedup:
+    def test_html_body_deduplicates_same_image_and_type(self):
+        updates = [
+            _make_update(container_name="app1", image="nginx", update_type="minor", new_version="1.1.0"),
+            _make_update(container_name="app2", image="nginx", update_type="minor", new_version="1.2.0"),
+            _make_update(container_name="app3", image="redis", update_type="patch", new_version="7.1.0"),
+        ]
+        html = _build_html(updates)
+        assert "(2)" in html  # "New updates (2)" — 2 after dedup, not 3
+        # Keeps highest version
+        assert "1.2.0" in html
+        assert "1.1.0" not in html
+
+    def test_plain_body_deduplicates_same_image_and_type(self):
+        updates = [
+            _make_update(container_name="app1", image="nginx", update_type="minor", new_version="1.1.0"),
+            _make_update(container_name="app2", image="nginx", update_type="minor", new_version="1.2.0"),
+            _make_update(container_name="app3", image="redis", update_type="patch", new_version="7.1.0"),
+        ]
+        text = _build_plain(updates)
+        assert "New updates (2)" in text
+        assert "1.2.0" in text
+        assert "1.1.0" not in text
+
+
+class TestBuildWarningsHtmlEdgeCases:
+    def test_warning_without_image_shows_dash(self):
+        html = _build_warnings_section_html([_make_warning(image=None)])
+        assert "\u2014" in html  # em dash fallback
+
+
+class TestSplitByStatusEdgeCases:
+    def test_unknown_status_is_silently_dropped(self):
+        updates = [
+            _make_update(status="new"),
+            _make_update(status="unknown_status"),
+        ]
+        new, known, resolved = _split_by_status(updates)
+        assert len(new) == 1
+        assert len(known) == 0
+        assert len(resolved) == 0
+
+
+class TestMismatchServiceNameFallback:
+    def test_html_uses_container_name_when_service_name_none(self):
+        m = _make_mismatch(service_name=None, container_name="my-container")
+        html = _build_mismatch_section_html([m])
+        assert "my-container" in html

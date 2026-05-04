@@ -245,3 +245,115 @@ class TestFetchAllTags:
     def test_unknown_registry_returns_empty(self):
         tags = fetch_all_tags("quay.io/org/image", None, "")
         assert tags == []
+
+    @patch("app.registry._fetch_dockerhub_tags", return_value=["1.0.0"])
+    def test_passes_current_tag_to_dockerhub(self, mock_fetch):
+        fetch_all_tags("nginx", "token", "", "1.0.0")
+        mock_fetch.assert_called_once_with("nginx", "token", "1.0.0")
+
+    @patch("app.registry._fetch_ghcr_tags", return_value=["v1.0.0"])
+    def test_passes_current_tag_to_ghcr(self, mock_fetch):
+        fetch_all_tags("ghcr.io/owner/repo", None, "gh_token", "v1.0.0")
+        mock_fetch.assert_called_once_with("ghcr.io/owner/repo", "gh_token", "v1.0.0")
+
+
+class TestDockerhubTokenEdgeCases:
+    """Edge cases for get_dockerhub_token."""
+
+    @patch.object(http_mod, "http_session")
+    def test_response_missing_token_field(self, mock_session):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"message": "ok"}  # no token key
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+
+        result = get_dockerhub_token("user", "pass")
+        assert result is None
+
+    @patch.object(http_mod, "http_session")
+    def test_successful_token_returned(self, mock_session):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"token": "abc123"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+
+        result = get_dockerhub_token("user", "pass")
+        assert result == "abc123"
+
+
+class TestFetchDockerhubAnonymous:
+    """DockerHub fetch without credentials."""
+
+    @patch.object(http_mod, "http_session")
+    def test_anonymous_fetch_no_auth_header(self, mock_session):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"results": [{"name": "latest"}], "next": None}
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.get.return_value = mock_resp
+
+        tags = _fetch_dockerhub_tags("nginx", None)
+        assert tags == ["latest"]
+        # Verify no Authorization header
+        call_kwargs = mock_session.get.call_args
+        headers = call_kwargs.get("headers") or call_kwargs[1].get("headers", {})
+        assert "Authorization" not in headers
+
+
+class TestFetchGhcrEdgeCases:
+    """GHCR edge cases."""
+
+    @patch.object(http_mod, "http_session")
+    def test_both_endpoints_404_returns_empty(self, mock_session):
+        """When both org and user endpoints return 404, return empty list."""
+        resp_404 = MagicMock()
+        resp_404.status_code = 404
+        resp_404.raise_for_status = MagicMock(side_effect=requests.HTTPError("404"))
+
+        mock_session.get.side_effect = [resp_404, resp_404]
+
+        tags = _fetch_ghcr_tags("ghcr.io/owner/repo", "gh_token")
+        assert tags == []
+
+    @patch.object(http_mod, "http_session")
+    def test_multi_level_namespace(self, mock_session):
+        """ghcr.io/org/group/image should construct correct API URL."""
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = [
+            {"metadata": {"container": {"tags": ["v1.0.0"]}}},
+        ]
+        resp_ok.raise_for_status = MagicMock()
+
+        resp_empty = MagicMock()
+        resp_empty.status_code = 200
+        resp_empty.json.return_value = []
+        resp_empty.raise_for_status = MagicMock()
+
+        mock_session.get.side_effect = [resp_ok, resp_empty]
+
+        tags = _fetch_ghcr_tags("ghcr.io/org/group/image", "gh_token")
+        assert tags == ["v1.0.0"]
+        url = mock_session.get.call_args_list[0][0][0]
+        assert "group/image" in url or "group%2Fimage" in url
+
+    @patch.object(http_mod, "http_session")
+    def test_version_without_tags_key_is_skipped(self, mock_session):
+        """API response with missing metadata is handled gracefully."""
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = [
+            {"metadata": {"container": {"tags": ["v1.0.0"]}}},
+            {"metadata": {}},  # no 'container' key
+            {"metadata": {"container": {}}},  # no 'tags' key
+        ]
+        resp_ok.raise_for_status = MagicMock()
+
+        resp_empty = MagicMock()
+        resp_empty.status_code = 200
+        resp_empty.json.return_value = []
+        resp_empty.raise_for_status = MagicMock()
+
+        mock_session.get.side_effect = [resp_ok, resp_empty]
+
+        tags = _fetch_ghcr_tags("ghcr.io/owner/repo", "gh_token")
+        assert tags == ["v1.0.0"]  # only the one with valid tags

@@ -243,3 +243,38 @@ class TestGetAllUpdates:
         all_updates = state.get_all_updates()
         statuses = {u["status"] for u in all_updates}
         assert statuses == {"known", "resolved"}
+
+    def test_resolved_status_takes_precedence_over_notified(self):
+        """An update that was notified and then resolved should show as 'resolved'."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        result = state.process_scan([u], scan_time=t1)
+        state.mark_notified(result, notified_time=t1)
+        # Resolve the update
+        state.process_scan([], scan_time=t2)
+
+        all_updates = state.get_all_updates()
+        assert len(all_updates) == 1
+        assert all_updates[0]["status"] == "resolved"
+
+
+class TestProcessScanEdgeCases:
+    def test_empty_container_name(self):
+        """Update with empty container_name is stored and retrieved."""
+        u = _make_update(container_name="")
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        result = state.process_scan([u], scan_time=t)
+        assert len(result) == 1
+        assert result[0].container_name == ""
+
+    def test_empty_image(self):
+        """Update with empty image is stored and retrieved."""
+        u = _make_update(image="")
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        result = state.process_scan([u], scan_time=t)
+        assert len(result) == 1
+        assert result[0].image == ""
