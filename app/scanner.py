@@ -42,6 +42,7 @@ def run_check() -> None:
     all_mismatches: list[RegexMismatch] = []
     all_warnings: list[ScanWarning] = []
     skipped_containers: list[dict] = []
+    monitored_versions: dict[tuple[str, str], tuple[str, str]] = {}
     monitored_count = 0
 
     for container in containers:
@@ -149,6 +150,9 @@ def run_check() -> None:
             ))
             continue
 
+        # Container fully validated — record its current version
+        monitored_versions[(container.name, image_name)] = (current_tag, pattern)
+
         updates = find_updates(current_tag, all_tags, pattern)
 
         if not updates:
@@ -176,7 +180,7 @@ def run_check() -> None:
     scan_time = datetime.now(timezone.utc)
 
     # Persist state and categorize: new / known / resolved
-    categorized = process_scan(all_updates, scan_time)
+    categorized = process_scan(all_updates, scan_time, current_versions=monitored_versions)
 
     new_count = sum(1 for u in categorized if u.status == "new")
     known_count = sum(1 for u in categorized if u.status == "known")
