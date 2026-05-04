@@ -7,6 +7,11 @@ import pytest
 import app.state as state
 from app.models import UpdateInfo
 
+# Pattern used for version matching (major.minor.patch)
+_PAT = r"^(\d+)\.(\d+)\.(\d+)$"
+# Pattern for 2-group versions (major.minor)
+_PAT2 = r"^(\d+)\.(\d+)$"
+
 
 def test_two_consecutive_scans():
     """Simulate two scans: first introduces updates, second resolves one and adds another."""
@@ -27,8 +32,8 @@ def test_two_consecutive_scans():
         service_name="db",
         stack="mystack",
         image="postgres",
-        current_version="15.0",
-        new_version="15.1",
+        current_version="15.0.0",
+        new_version="15.1.0",
         update_type="patch",
     )
     update_c = UpdateInfo(
@@ -59,8 +64,13 @@ def test_two_consecutive_scans():
     # Mark as notified
     state.mark_notified(result1, notified_time=t1)
 
-    # --- Scan 2: A still present, B gone, C is new ---
-    result2 = state.process_scan([update_a, update_c], scan_time=t2)
+    # --- Scan 2: A still present, B resolved (db updated), C is new ---
+    cv = {
+        ("web", "nginx"): ("1.0.0", _PAT),
+        ("db", "postgres"): ("15.1.0", _PAT),      # db updated to 15.1.0
+        ("cache", "redis"): ("7.0.0", _PAT),
+    }
+    result2 = state.process_scan([update_a, update_c], scan_time=t2, current_versions=cv)
 
     new2 = [r for r in result2 if r.status == "new"]
     known2 = [r for r in result2 if r.status == "known"]

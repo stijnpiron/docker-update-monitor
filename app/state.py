@@ -6,6 +6,7 @@ from pathlib import Path
 import app.config as _config
 from app.migrations import run_migrations
 from app.models import UpdateInfo
+from app.version import parse_tag
 
 _DB_PATH = Path(_config.STATE_DB_PATH)
 
@@ -38,14 +39,31 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def process_scan(updates: list[UpdateInfo], scan_time: datetime | None = None) -> list[UpdateInfo]:
-    """Upsert scan results, resolve absent entries, and return all updates with status set.
+def process_scan(
+    updates: list[UpdateInfo],
+    scan_time: datetime | None = None,
+    current_versions: dict[tuple[str, str], tuple[str, str]] | None = None,
+) -> list[UpdateInfo]:
+    """Upsert scan results, resolve or delete absent entries, return updates with status.
 
     Returns a list of UpdateInfo with ``status`` set to ``"new"``, ``"known"``,
     or ``"resolved"``.
+
+    *current_versions* maps ``(container_name, image)`` → ``(current_tag, pattern)``
+    for every container that was successfully scanned this cycle.  For absent DB
+    entries whose container appears in this map:
+
+    * If the container's current version ≥ the stored ``new_version`` → **resolved**
+      (the user updated the container).
+    * Otherwise → **deleted** (the upstream version was yanked / superseded).
+
+    Entries for containers *not* in *current_versions* are left untouched (the
+    container may have been temporarily unreachable).
     """
     if scan_time is None:
         scan_time = datetime.now(timezone.utc)
+    if current_versions is None:
+        current_versions = {}
 
     ts = scan_time.isoformat()
     conn = _connect()
@@ -66,38 +84,61 @@ def process_scan(updates: list[UpdateInfo], scan_time: datetime | None = None) -
                  u.update_type, u.stack, ts, ts),
             )
 
-        # --- resolve absent entries ---
-        if not updates:
-            conn.execute(
-                "UPDATE updates SET resolved_at = ? WHERE resolved_at IS NULL",
-                (ts,),
-            )
-        else:
-            placeholders = ",".join(["(?, ?, ?, ?)"] * len(updates))
-            params: list[str] = []
-            for u in updates:
-                params.extend([u.container_name, u.image, u.new_version, u.update_type])
+        # --- resolve or delete absent entries ---
+        current_keys = {
+            (u.container_name, u.image, u.new_version, u.update_type)
+            for u in updates
+        }
 
-            conn.execute(
-                f"""UPDATE updates SET resolved_at = ?
-                    WHERE resolved_at IS NULL
-                    AND (container_name, image, new_version, update_type) NOT IN
-                        (VALUES {placeholders})""",
-                [ts] + params,
-            )
+        conn.row_factory = sqlite3.Row
+        active_rows = conn.execute(
+            "SELECT * FROM updates WHERE resolved_at IS NULL",
+        ).fetchall()
+
+        resolved_ids: list[int] = []
+
+        for row in active_rows:
+            key = (row["container_name"], row["image"], row["new_version"], row["update_type"])
+            if key in current_keys:
+                continue  # still detected, already upserted
+
+            cv_key = (row["container_name"], row["image"])
+            if cv_key not in current_versions:
+                continue  # container not scanned this cycle — leave entry alone
+
+            # Container was scanned — check if it was updated
+            current_tag, pattern = current_versions[cv_key]
+            resolved = False
+            try:
+                current_parsed = parse_tag(current_tag, pattern)
+                new_parsed = parse_tag(row["new_version"], pattern)
+                if current_parsed is not None and new_parsed is not None and current_parsed >= new_parsed:
+                    resolved = True
+            except (ValueError, TypeError):
+                pass
+
+            if resolved:
+                conn.execute(
+                    "UPDATE updates SET resolved_at = ? WHERE id = ?",
+                    (ts, row["id"]),
+                )
+                resolved_ids.append(row["id"])
+            else:
+                # Version yanked or superseded — forget it
+                conn.execute("DELETE FROM updates WHERE id = ?", (row["id"],))
 
         conn.commit()
 
         # --- build categorized result ---
-        conn.row_factory = sqlite3.Row
+        if resolved_ids:
+            ph = ",".join("?" * len(resolved_ids))
+            resolved_rows = conn.execute(
+                f"SELECT * FROM updates WHERE id IN ({ph}) ORDER BY first_seen_at",
+                resolved_ids,
+            ).fetchall()
+        else:
+            resolved_rows = []
 
-        # Newly resolved in this scan
-        resolved_rows = conn.execute(
-            "SELECT * FROM updates WHERE resolved_at = ? ORDER BY first_seen_at",
-            (ts,),
-        ).fetchall()
-
-        # Active (non-resolved)
         active_rows = conn.execute(
             "SELECT * FROM updates WHERE resolved_at IS NULL ORDER BY first_seen_at",
         ).fetchall()
