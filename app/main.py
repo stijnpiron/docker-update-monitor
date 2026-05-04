@@ -8,6 +8,7 @@ from croniter import croniter
 import app.config as _config
 from app.scanner import run_check
 from app.health import update_state
+from app.state import load_last_check
 from app.dashboard import start_dashboard, _scan_trigger
 
 shutdown_requested = False
@@ -27,6 +28,16 @@ def main() -> None:
     _config.log.info("Docker Update Monitor started")
     if _config.DRY_RUN:
         _config.log.info("DRY_RUN mode active — no HTTP POSTs will be made")
+
+    # Restore last_check from persistent storage
+    persisted_last_check = load_last_check()
+    if persisted_last_check:
+        from datetime import datetime as _dt
+        try:
+            lc = _dt.fromisoformat(persisted_last_check.replace("Z", "+00:00"))
+            update_state(last_check=lc)
+        except (ValueError, TypeError):
+            pass
 
     if not croniter.is_valid(_config.CRON_SCHEDULE):
         _config.log.error(f"Invalid cron expression: '{_config.CRON_SCHEDULE}' — exiting")
