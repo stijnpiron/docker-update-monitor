@@ -46,6 +46,11 @@ services:
       # Set to "true" to log updates without POSTing — useful for testing
       DRY_RUN: "false"
 
+      # Cooldown period before notifying about a newly detected update.
+      # Accepted formats: "0" (no cooldown, default), "12h", "3d", "2w", "1m".
+      # Can be overridden per container with the docker-update-monitor.update-cooldown label.
+      # UPDATE_COOLDOWN: "0"
+
       # Label namespace (default: docker-update-monitor)
       # LABEL_PREFIX: "docker-update-monitor"
       # Only docker containers with docker-update-monitor.tag-regex are monitored

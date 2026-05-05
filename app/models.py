@@ -11,6 +11,7 @@ class UpdateInfo:
     new_version: str
     update_type: str        # "patch" | "minor" | "major"
     status: str = ""        # "new" | "known" | "resolved"
+    first_seen_at: str | None = None
 
 
 @dataclass
