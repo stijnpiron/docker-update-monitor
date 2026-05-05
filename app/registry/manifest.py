@@ -1,0 +1,195 @@
+"""Fetch manifest lists (fat manifests) to verify multi-architecture support.
+
+Queries the registry v2 manifest endpoint for a given image:tag and returns
+the list of supported platforms. Single-arch images (no manifest list) are
+treated as compatible. Results are cached per (image_name, tag) pair.
+"""
+
+import base64
+from typing import Optional
+
+import requests
+
+import app.http as _http
+from app.config import log
+from app.registry.base import detect_registry
+
+# Module-level cache: (image_name, tag) → list[dict] | None
+# list[dict]: platform entries from a multi-arch manifest list
+# None: single-arch image; treat as compatible
+_cache: dict[tuple[str, str], Optional[list[dict]]] = {}
+
+
+def clear_cache() -> None:
+    """Clear the manifest list cache. Used in tests."""
+    _cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _get_token(realm: str, service: str, scope: str, bearer_token: str = "",
+               username: str = "", password: str = "") -> Optional[str]:
+    """Obtain a Bearer token from a registry token endpoint."""
+    headers: dict[str, str] = {}
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    elif username and password:
+        creds = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers["Authorization"] = f"Basic {creds}"
+
+    params = {"service": service, "scope": scope}
+    try:
+        resp = _http.http_session.get(realm, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("token") or data.get("access_token")
+    except Exception as exc:
+        log.warning(f"Registry token request failed ({realm}): {exc}")
+        return None
+
+
+def _fetch_platforms_from_url(url: str, auth_headers: dict) -> Optional[list[dict]]:
+    """
+    GET the manifest URL and return the platform list if it is a manifest list,
+    or None if it is a single-arch manifest.
+    """
+    headers = {
+        **auth_headers,
+        "Accept": (
+            "application/vnd.docker.distribution.manifest.list.v2+json,"
+            "application/vnd.oci.image.index.v1+json"
+        ),
+    }
+    try:
+        resp = _http.http_session.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        media_type = data.get("mediaType", "") or ""
+        # Manifest list / OCI image index → has a manifests[] with platform info
+        if "manifest.list" in media_type or "image.index" in media_type:
+            return [m.get("platform", {}) for m in data.get("manifests", [])]
+        # Fallback: schema v2 with a manifests[] key (e.g. some OCI indexes omit mediaType)
+        if data.get("schemaVersion") == 2 and isinstance(data.get("manifests"), list):
+            platforms = [m.get("platform", {}) for m in data["manifests"]]
+            if platforms:
+                return platforms
+        # Single-arch manifest
+        return None
+    except requests.HTTPError as exc:
+        log.warning(f"Manifest fetch HTTP error ({url}): {exc}")
+        return None
+    except Exception as exc:
+        log.warning(f"Manifest fetch error ({url}): {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Registry-specific fetchers
+# ---------------------------------------------------------------------------
+
+def _fetch_dockerhub_manifest_list(
+    image_name: str, tag: str, username: str, password: str
+) -> Optional[list[dict]]:
+    name = image_name.removeprefix("docker.io/")
+    parts = name.split("/")
+    if len(parts) == 1:
+        name = f"library/{name}"
+
+    scope = f"repository:{name}:pull"
+    token = _get_token(
+        "https://auth.docker.io/token",
+        service="registry.docker.io",
+        scope=scope,
+        username=username,
+        password=password,
+    )
+    if not token:
+        log.warning(f"DockerHub: could not obtain registry token for {name} — skipping arch check")
+        return None
+
+    url = f"https://registry-1.docker.io/v2/{name}/manifests/{tag}"
+    return _fetch_platforms_from_url(url, {"Authorization": f"Bearer {token}"})
+
+
+def _fetch_ghcr_manifest_list(
+    image_name: str, tag: str, github_token: str
+) -> Optional[list[dict]]:
+    if not github_token:
+        log.warning(f"GHCR: no GITHUB_TOKEN — skipping arch check for {image_name}")
+        return None
+
+    path = image_name.removeprefix("ghcr.io/").removeprefix("lscr.io/")
+    host = "ghcr.io" if not image_name.startswith("lscr.io/") else "lscr.io"
+
+    # Exchange GitHub PAT for a registry-scoped token
+    scope = f"repository:{path}:pull"
+    reg_token = _get_token(
+        f"https://{host}/token",
+        service=host,
+        scope=scope,
+        bearer_token=github_token,
+    )
+    if not reg_token:
+        log.warning(f"GHCR: could not obtain registry token for {path} — skipping arch check")
+        return None
+
+    url = f"https://{host}/v2/{path}/manifests/{tag}"
+    return _fetch_platforms_from_url(url, {"Authorization": f"Bearer {reg_token}"})
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_manifest_list(
+    image_name: str,
+    tag: str,
+    dockerhub_username: str,
+    dockerhub_password: str,
+    github_token: str,
+) -> Optional[list[dict]]:
+    """Return the list of supported platforms for *image_name*:*tag*.
+
+    Returns:
+        list[dict]: platform dicts (keys: ``os``, ``architecture``, optionally ``variant``)
+                    when the image has a manifest list.
+        None: the image is single-arch or the manifest could not be fetched;
+              the caller should treat this as compatible (current behaviour).
+
+    Results are cached per (image_name, tag) for the lifetime of the process.
+    """
+    cache_key = (image_name, tag)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    registry = detect_registry(image_name)
+    if registry == "dockerhub":
+        result = _fetch_dockerhub_manifest_list(image_name, tag, dockerhub_username, dockerhub_password)
+    elif registry == "ghcr":
+        result = _fetch_ghcr_manifest_list(image_name, tag, github_token)
+    else:
+        log.debug(f"Unknown registry for '{image_name}' — skipping arch check")
+        result = None
+
+    _cache[cache_key] = result
+    return result
+
+
+def is_platform_supported(
+    platforms: Optional[list[dict]],
+    os: str,
+    architecture: str,
+) -> bool:
+    """Return True if *os*/*architecture* is present in *platforms*.
+
+    If *platforms* is ``None`` (single-arch image or manifest unavailable),
+    returns ``True`` to preserve the existing (compatible) behaviour.
+    """
+    if platforms is None:
+        return True
+    return any(
+        p.get("os") == os and p.get("architecture") == architecture
+        for p in platforms
+    )
