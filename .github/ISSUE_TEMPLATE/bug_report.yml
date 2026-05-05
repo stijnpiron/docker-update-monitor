@@ -14,12 +14,14 @@ body:
     id: current_behavior
     attributes:
       label: Current behavior
+      description: Current behavior
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: Steps to reproduce
+      description: Steps to reproduce
       placeholder: 1. Go to...
     validations:
       required: true
@@ -32,7 +34,9 @@ body:
     id: technical_context
     attributes:
       label: Technical context
+      description: Technical context
   - type: textarea
     id: acceptance_criteria
     attributes:
       label: Acceptance criteria
+      description: Acceptance criteria
