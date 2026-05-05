@@ -1,0 +1,64 @@
+name: 📝 Documentation Issue
+description: Report missing, incorrect, or unclear documentation
+title: "[DOCS]: "
+labels: ["documentation"]
+assignees: []
+projects: ["stijnpiron/6"]
+
+body:
+  - type: markdown
+    attributes:
+      value: Good docs matter. Help us improve them!
+
+  - type: input
+    id: location
+    attributes:
+      label: Affected Page or Section
+      description: Link to or describe the specific docs location.
+      placeholder: e.g. https://docs.example.com/getting-started or "README installation section"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue_type
+    attributes:
+      label: Type of Issue
+      options:
+        - Missing documentation
+        - Incorrect / outdated information
+        - Unclear or confusing explanation
+        - Broken link or code example
+        - Typo / grammar
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the Problem?
+      description: Describe what's wrong or missing.
+      placeholder: The docs say X but actually...
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: What should the docs say or include instead?
+      placeholder: It should explain...
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any links, references, or related issues.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have checked that this issue hasn't already been reported
+          required: true
