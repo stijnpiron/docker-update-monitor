@@ -1,10 +1,11 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import docker
 from docker.errors import DockerException
 
 import app.config as _config
+from app.cooldown import parse_cooldown
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
@@ -43,6 +44,7 @@ def run_check() -> None:
     all_warnings: list[ScanWarning] = []
     skipped_containers: list[dict] = []
     monitored_versions: dict[tuple[str, str], tuple[str, str]] = {}
+    container_cooldowns: dict[str, object] = {}  # container_name → timedelta
     monitored_count = 0
 
     for container in containers:
@@ -71,6 +73,16 @@ def run_check() -> None:
             continue
 
         monitored_count += 1
+
+        # Parse per-container cooldown label; fall back to global config
+        cooldown_label = labels.get(f"{_config.LABEL_PREFIX}.update-cooldown", _config.UPDATE_COOLDOWN)
+        try:
+            container_cooldowns[container.name] = parse_cooldown(cooldown_label)
+        except ValueError:
+            _config.log.warning(
+                f"  [{container.name}] Invalid update-cooldown value '{cooldown_label}' — using no cooldown"
+            )
+            container_cooldowns[container.name] = parse_cooldown("0")
 
         try:
             re.compile(pattern)
@@ -199,10 +211,28 @@ def run_check() -> None:
     resolved_count = sum(1 for u in categorized if u.status == "resolved")
     _config.log.info(f"  New: {new_count}  |  Known: {known_count}  |  Resolved: {resolved_count}")
 
+    # Apply cooldown — suppress new/known updates that haven't matured yet
+    global_cooldown = parse_cooldown(_config.UPDATE_COOLDOWN)
+    actionable: list[UpdateInfo] = []
+    for u in categorized:
+        if u.status == "resolved":
+            actionable.append(u)
+            continue
+        cooldown = container_cooldowns.get(u.container_name, global_cooldown)
+        if cooldown and u.first_seen_at:
+            first_seen = datetime.fromisoformat(u.first_seen_at)
+            if scan_time - first_seen < cooldown:
+                _config.log.info(
+                    f"  [{u.container_name}] {u.current_version} → {u.new_version} "
+                    f"in cooldown ({cooldown}), skipping notification"
+                )
+                continue
+        actionable.append(u)
+
     # Notify with all categorized updates (grouped by status in payload)
-    notify(categorized, mismatches=all_mismatches, warnings=all_warnings)
-    if categorized:
-        mark_notified(categorized, scan_time)
+    notify(actionable, mismatches=all_mismatches, warnings=all_warnings)
+    if actionable:
+        mark_notified(actionable, scan_time)
 
     # Update health endpoint state
     warnings_data = [
