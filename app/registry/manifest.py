@@ -7,6 +7,7 @@ treated as compatible. Results are cached per (image_name, tag) pair.
 
 import base64
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -120,8 +121,17 @@ def _fetch_ghcr_manifest_list(
         log.warning(f"GHCR: no GITHUB_TOKEN — skipping arch check for {image_name}")
         return None
 
-    path = image_name.removeprefix("ghcr.io/").removeprefix("lscr.io/")
-    host = "ghcr.io" if not image_name.startswith("lscr.io/") else "lscr.io"
+    image_ref = image_name.strip()
+    parsed = urlparse(image_ref)
+
+    parsed_host = ""
+    if parsed.scheme and parsed.netloc:
+        parsed_host = (parsed.hostname or "").lower()
+    elif "/" in image_ref:
+        parsed_host = image_ref.split("/", 1)[0].lower()
+
+    host = "lscr.io" if parsed_host == "lscr.io" else "ghcr.io"
+    path = image_ref.removeprefix(f"{host}/")
 
     # Exchange GitHub PAT for a registry-scoped token
     scope = f"repository:{path}:pull"
