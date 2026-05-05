@@ -31,11 +31,11 @@ payload to a webhook when updates are found.
 
 Pre-built images are published to `ghcr.io/stijnpiron/docker-update-monitor` for the following platforms:
 
-| Platform | Hardware |
-|---|---|
-| `linux/amd64` | x86-64 servers, cloud VMs, desktop Docker (Linux/Windows/Mac Intel) |
-| `linux/arm64` | Raspberry Pi 4 / 5, Apple Silicon (via Docker Desktop), AWS Graviton |
-| `linux/arm/v7` | Raspberry Pi 2 / 3 running 32-bit Raspberry Pi OS |
+| Platform       | Hardware                                                             |
+| -------------- | -------------------------------------------------------------------- |
+| `linux/amd64`  | x86-64 servers, cloud VMs, desktop Docker (Linux/Windows/Mac Intel)  |
+| `linux/arm64`  | Raspberry Pi 4 / 5, Apple Silicon (via Docker Desktop), AWS Graviton |
+| `linux/arm/v7` | Raspberry Pi 2 / 3 running 32-bit Raspberry Pi OS                    |
 
 Docker automatically selects the correct image variant for your hardware — no `--platform` flag required.
 
