@@ -10,7 +10,6 @@ from app.notifications.email import (
     notify as email_notify,
     _build_html,
     _build_plain,
-    _dedup,
     _sort_updates,
     _split_by_status,
     _build_mismatch_section_html,
@@ -230,8 +229,8 @@ class TestEmailNotify:
             email_notify(updates)
 
         raw_email = mock_server.sendmail.call_args[0][2]
-        # 3 raw updates, but nginx+minor deduplicates to 1, so total = 2
-        assert "2_image_updates" in raw_email  # Q-encoded subject
+        # 3 updates across 3 different containers — no cross-container dedup, so total = 3
+        assert "3_image_updates" in raw_email  # Q-encoded subject
 
 
 class TestNotifyChannelsDispatch:
@@ -309,33 +308,6 @@ def _make_warning(**kwargs):
     )
     defaults.update(kwargs)
     return ScanWarning(**defaults)
-
-
-class TestDedup:
-    def test_keeps_highest_version_per_image_and_type(self):
-        updates = [
-            _make_update(image="nginx", update_type="minor", new_version="1.1.0"),
-            _make_update(image="nginx", update_type="minor", new_version="1.2.0"),
-        ]
-        result = _dedup(updates)
-        assert len(result) == 1
-        assert result[0].new_version == "1.2.0"
-
-    def test_different_types_kept_separate(self):
-        updates = [
-            _make_update(image="nginx", update_type="minor", new_version="1.1.0"),
-            _make_update(image="nginx", update_type="major", new_version="2.0.0"),
-        ]
-        result = _dedup(updates)
-        assert len(result) == 2
-
-    def test_different_images_kept_separate(self):
-        updates = [
-            _make_update(image="nginx", update_type="minor", new_version="1.1.0"),
-            _make_update(image="redis", update_type="minor", new_version="7.1.0"),
-        ]
-        result = _dedup(updates)
-        assert len(result) == 2
 
 
 class TestSortUpdates:
@@ -562,28 +534,29 @@ class TestBuildRowsEdgeCases:
 
 
 class TestBuildHtmlDedup:
-    def test_html_body_deduplicates_same_image_and_type(self):
+    def test_html_body_shows_all_containers_sharing_same_image(self):
         updates = [
             _make_update(container_name="app1", image="nginx", update_type="minor", new_version="1.1.0"),
-            _make_update(container_name="app2", image="nginx", update_type="minor", new_version="1.2.0"),
+            _make_update(container_name="app2", image="nginx", update_type="minor", new_version="1.1.0"),
             _make_update(container_name="app3", image="redis", update_type="patch", new_version="7.1.0"),
         ]
         html = _build_html(updates)
-        assert "(2)" in html  # "New updates (2)" — 2 after dedup, not 3
-        # Keeps highest version
-        assert "1.2.0" in html
-        assert "1.1.0" not in html
+        # All 3 containers are distinct — no cross-container dedup
+        assert "(3)" in html
+        assert "app1" in html
+        assert "app2" in html
 
-    def test_plain_body_deduplicates_same_image_and_type(self):
+    def test_plain_body_shows_all_containers_sharing_same_image(self):
         updates = [
             _make_update(container_name="app1", image="nginx", update_type="minor", new_version="1.1.0"),
-            _make_update(container_name="app2", image="nginx", update_type="minor", new_version="1.2.0"),
+            _make_update(container_name="app2", image="nginx", update_type="minor", new_version="1.1.0"),
             _make_update(container_name="app3", image="redis", update_type="patch", new_version="7.1.0"),
         ]
         text = _build_plain(updates)
-        assert "New updates (2)" in text
-        assert "1.2.0" in text
-        assert "1.1.0" not in text
+        # All 3 containers are distinct — no cross-container dedup
+        assert "New updates (3)" in text
+        assert "app1" in text
+        assert "app2" in text
 
 
 class TestBuildWarningsHtmlEdgeCases:
