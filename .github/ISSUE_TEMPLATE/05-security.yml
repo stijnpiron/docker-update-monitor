@@ -1,0 +1,79 @@
+name: 🔒 Security Issue
+description: Report a non-critical security concern (see warning inside for critical issues)
+title: "[SECURITY] "
+labels: ["security"]
+assignees: []
+projects: ["stijnpiron/6"]
+
+body:
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How severe is this security issue?
+      options:
+        - "Low — minimal impact, no sensitive data at risk"
+        - "Medium — limited impact, some data or users affected"
+        - "High — significant impact, sensitive data or many users at risk"
+        - "Critical — full compromise, remote code execution, or mass data exposure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the security issue clearly.
+      placeholder: Describe the vulnerability or concern...
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: What is the potential impact? Who could be affected and how?
+      placeholder: This could allow an attacker to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested Fix
+      description: If you have a suggestion for remediation, share it here.
+
+  - type: input
+    id: version
+    attributes:
+      label: Affected Version(s)
+      placeholder: e.g. v1.2.3 – v1.5.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: CVE references, related issues, proof-of-concept details, etc.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched for existing security issues and this is not a duplicate
+          required: true
+        - label: I have included enough detail to reproduce or evaluate this issue
+          required: true
+ 
