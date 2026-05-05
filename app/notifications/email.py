@@ -24,15 +24,6 @@ def _split_by_status(updates: list[UpdateInfo]) -> tuple[list[UpdateInfo], list[
     return new, known, resolved
 
 
-def _dedup(updates: list[UpdateInfo]) -> list[UpdateInfo]:
-    best: dict[str, UpdateInfo] = {}
-    for u in updates:
-        key = f"{u.image}|{u.update_type}"
-        if key not in best or (u.new_version or "") > (best[key].new_version or ""):
-            best[key] = u
-    return list(best.values())
-
-
 def _sort_updates(updates: list[UpdateInfo]) -> list[UpdateInfo]:
     return sorted(updates, key=lambda u: (u.stack or "", u.image or ""))
 
@@ -138,9 +129,9 @@ def _build_warnings_section_html(warnings: list[ScanWarning]) -> str:
 
 def _build_html(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | None = None, warnings: list[ScanWarning] | None = None) -> str:
     new, known, resolved = _split_by_status(updates)
-    new = _sort_updates(_dedup(new))
-    known = _sort_updates(_dedup(known))
-    resolved = _sort_updates(_dedup(resolved))
+    new = _sort_updates(new)
+    known = _sort_updates(known)
+    resolved = _sort_updates(resolved)
 
     sections = ""
     sections += _build_section("New updates", "\U0001f195", new, "#dc2626")
@@ -163,9 +154,9 @@ def _build_html(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | Non
 
 def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | None = None, warnings: list[ScanWarning] | None = None) -> str:
     new, known, resolved = _split_by_status(updates)
-    new = _sort_updates(_dedup(new))
-    known = _sort_updates(_dedup(known))
-    resolved = _sort_updates(_dedup(resolved))
+    new = _sort_updates(new)
+    known = _sort_updates(known)
+    resolved = _sort_updates(resolved)
 
     lines = ["Docker Update Monitor", "=" * 40, ""]
     for title, group in [("New updates", new), ("Known updates", known), ("Resolved", resolved)]:
@@ -215,7 +206,7 @@ def notify(
         return
 
     new, known, resolved = _split_by_status(updates)
-    total = len(_dedup(new)) + len(_dedup(known)) + len(_dedup(resolved))
+    total = len(new) + len(known) + len(resolved)
     subject = f"\U0001f433 Docker Update Monitor \u2013 {total} image update{'s' if total != 1 else ''}"
 
     msg = MIMEMultipart("alternative")
