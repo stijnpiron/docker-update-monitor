@@ -1,0 +1,90 @@
+name: ⚡ Performance Issue
+description: Report something that is slow, memory-hungry, or resource-inefficient
+title: "[PERF]: "
+labels: ["performance"]
+assignees: []
+projects: ["stijnpiron/6"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us understand the performance problem.
+        Numbers and measurements are especially helpful!
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is slow, memory-hungry, or resource-inefficient?
+      placeholder: Describe the performance issue...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. Observe degraded performance
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Performance Problem Type
+      options:
+        - Slow response / high latency
+        - High memory usage
+        - High CPU usage
+        - Large bundle / build size
+        - Slow startup time
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurements
+    attributes:
+      label: Measurements
+      description: Share any benchmarks, profiling output, or timing data.
+      placeholder: |
+        e.g.
+        - Response time: expected < 200ms, actual ~2000ms
+        - Memory: expected < 100MB, actual ~500MB
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Profiling Data / Screenshots
+      description: Attach flame graphs, heap snapshots, screenshots, or logs if available.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: App / Package Version
+      placeholder: e.g. v1.2.3
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Possible causes, related issues, or suggestions for improvement.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched for existing performance issues and this is not a duplicate
+          required: true
+        - label: I have included measurements or profiling data
+          required: true
