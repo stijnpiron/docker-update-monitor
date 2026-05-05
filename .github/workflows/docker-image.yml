@@ -33,6 +33,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm,arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -74,7 +79,7 @@ jobs:
           # Cache layers between runs — dramatically speeds up rebuilds
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Build for both amd64 (most servers) and arm64 (Raspberry Pi / Apple M)
-          platforms: linux/amd64,linux/arm64
+          # Full multi-platform on push/release; amd64-only on PRs to keep CI fast
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64,linux/arm/v7' }}
           provenance: false
           sbom: false
