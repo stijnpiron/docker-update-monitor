@@ -1,0 +1,98 @@
+name: 🚀 Feature Request
+description: Suggest a new idea or enhancement
+title: "[FEATURE]: "
+labels: ["enhancement"]
+assignees: []
+projects: ["stijnpiron/6"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? We'd love to hear it!
+        The more detail you provide, the better we can evaluate and prioritize your request.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature Summary
+      description: A short, clear description of the feature you'd like.
+      placeholder: In one or two sentences, what should this feature do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem does this solve? Why is it valuable?
+      placeholder: |
+        e.g. "I'm always frustrated when..."
+        or "This would allow users to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe how you envision this working. Be as specific as you like.
+      placeholder: Describe the solution...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / Component
+      description: Which part of the project does this relate to?
+      options:
+        - UI / Frontend
+        - API / Backend
+        - Documentation
+        - Performance
+        - Security
+        - Developer Experience
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Would improve my workflow
+        - Blocking — I really need this
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you thought of other ways to solve this? Why is your proposal the best fit?
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: What does "done" look like for this feature?
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Mockups, links, related issues, or any other context.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched for existing feature requests and this is not a duplicate
+          required: true
