@@ -73,7 +73,12 @@ def main() -> None:
                 triggered = True
                 if shutdown_requested:
                     break
-                # Recalculate next scheduled run
+                # Recalculate next scheduled run from current time.
+                # Do NOT call cron.get_next() here — that would advance the shared
+                # iterator past the already-scheduled next_run, causing it to be skipped.
+                # Instead, recreate the croniter from now so next_run is the first
+                # scheduled time that is still in the future.
+                cron = croniter(_config.CRON_SCHEDULE, datetime.now(timezone.utc))
                 next_run = cron.get_next(datetime)
                 update_state(next_check=next_run)
                 _config.log.info(f"Next check at: {next_run.strftime('%Y-%m-%dT%H:%M:%S %Z')}\n")
