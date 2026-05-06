@@ -164,6 +164,7 @@ def process_scan(
                 new_version=row["new_version"],
                 update_type=row["update_type"],
                 status=status,
+                first_seen_at=row["first_seen_at"],
             ))
 
         for row in resolved_rows:
@@ -176,6 +177,7 @@ def process_scan(
                 new_version=row["new_version"],
                 update_type=row["update_type"],
                 status="resolved",
+                first_seen_at=row["first_seen_at"],
             ))
 
         return result

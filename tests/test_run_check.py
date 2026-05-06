@@ -1,10 +1,12 @@
 """Unit tests for run_check() — Docker connection, container processing, and main() edge cases."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
 from app import config as config_mod
 from app import main as main_mod
+from app.models import UpdateInfo
 from app.scanner import run_check
 
 
@@ -351,6 +353,209 @@ class TestRunCheckContainerProcessing:
 
         assert "Invalid tag-regex" in caplog.text
         mock_fetch.assert_not_called()
+
+
+class TestRunCheckCooldown:
+    """Cooldown suppression behaviour in run_check()."""
+
+    _CONTAINER_NAME = "app"
+    _PATTERN = r"^(\d+)\.(\d+)\.(\d+)$"
+
+    def _make_update(self, first_seen_at: str) -> UpdateInfo:
+        return UpdateInfo(
+            container_name=self._CONTAINER_NAME,
+            service_name=self._CONTAINER_NAME,
+            stack="stack",
+            image="nginx",
+            current_version="1.0.0",
+            new_version="2.0.0",
+            update_type="major",
+            status="new",
+            first_seen_at=first_seen_at,
+        )
+
+    def _mock_docker(self, mock_docker, labels=None):
+        if labels is None:
+            labels = {f"docker-update-monitor.tag-regex": self._PATTERN}
+        container = _make_container(self._CONTAINER_NAME, "nginx:1.0.0", labels)
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_update_within_cooldown_not_notified(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """An update first seen moments ago is suppressed when a cooldown is set."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        # first_seen_at is 1 hour ago, cooldown is 12h → still within cooldown
+        first_seen = (fixed_now - timedelta(hours=1)).isoformat()
+        mock_scan.return_value = [self._make_update(first_seen)]
+
+        self._mock_docker(mock_docker)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        mock_notify.assert_called_once()
+        notified_updates = mock_notify.call_args[0][0]
+        assert notified_updates == []
+        mock_mark.assert_not_called()
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_update_past_cooldown_is_notified(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """An update first seen long enough ago passes through the cooldown filter."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        # first_seen_at is 13 hours ago, cooldown is 12h → past cooldown
+        first_seen = (fixed_now - timedelta(hours=13)).isoformat()
+        mock_scan.return_value = [self._make_update(first_seen)]
+
+        self._mock_docker(mock_docker)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        mock_notify.assert_called_once()
+        notified_updates = mock_notify.call_args[0][0]
+        assert len(notified_updates) == 1
+        assert notified_updates[0].new_version == "2.0.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_per_container_label_overrides_global_cooldown(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Per-container label cooldown takes precedence over global UPDATE_COOLDOWN."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        # first_seen_at is 6 hours ago; global=0 (no cooldown), label=12h → suppressed
+        first_seen = (fixed_now - timedelta(hours=6)).isoformat()
+        mock_scan.return_value = [self._make_update(first_seen)]
+
+        labels = {
+            "docker-update-monitor.tag-regex": self._PATTERN,
+            "docker-update-monitor.update-cooldown": "12h",
+        }
+        self._mock_docker(mock_docker, labels=labels)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        notified_updates = mock_notify.call_args[0][0]
+        assert notified_updates == []
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_per_container_label_zero_bypasses_global_cooldown(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Per-container label '0' disables cooldown even when global cooldown is set."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        # first_seen_at is 1 hour ago; global=12h, label=0 → not suppressed
+        first_seen = (fixed_now - timedelta(hours=1)).isoformat()
+        mock_scan.return_value = [self._make_update(first_seen)]
+
+        labels = {
+            "docker-update-monitor.tag-regex": self._PATTERN,
+            "docker-update-monitor.update-cooldown": "0",
+        }
+        self._mock_docker(mock_docker, labels=labels)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        notified_updates = mock_notify.call_args[0][0]
+        assert len(notified_updates) == 1
+
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_invalid_cooldown_label_warns_and_uses_zero(
+        self, mock_docker, mock_token, mock_fetch, caplog
+    ):
+        """An invalid per-container cooldown label logs a warning and uses no cooldown."""
+        import logging
+
+        labels = {
+            "docker-update-monitor.tag-regex": self._PATTERN,
+            "docker-update-monitor.update-cooldown": "bad-value",
+        }
+        self._mock_docker(mock_docker, labels=labels)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             caplog.at_level(logging.WARNING):
+            run_check()
+
+        assert "Invalid update-cooldown value" in caplog.text
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_resolved_updates_always_pass_through(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Resolved updates are never blocked by the cooldown filter."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        # first_seen_at is 1 minute ago — well within any cooldown
+        first_seen = (fixed_now - timedelta(minutes=1)).isoformat()
+        resolved = UpdateInfo(
+            container_name=self._CONTAINER_NAME,
+            service_name=self._CONTAINER_NAME,
+            stack="stack",
+            image="nginx",
+            current_version="2.0.0",
+            new_version="2.0.0",
+            update_type="major",
+            status="resolved",
+            first_seen_at=first_seen,
+        )
+        mock_scan.return_value = [resolved]
+
+        self._mock_docker(mock_docker)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        notified_updates = mock_notify.call_args[0][0]
+        assert len(notified_updates) == 1
+        assert notified_updates[0].status == "resolved"
 
 
 class TestMainEdgeCases:

@@ -27,6 +27,20 @@ payload to a webhook when updates are found.
 
 ---
 
+## Supported platforms
+
+Pre-built images are published to `ghcr.io/stijnpiron/docker-update-monitor` for the following platforms:
+
+| Platform       | Hardware                                                             |
+| -------------- | -------------------------------------------------------------------- |
+| `linux/amd64`  | x86-64 servers, cloud VMs, desktop Docker (Linux/Windows/Mac Intel)  |
+| `linux/arm64`  | Raspberry Pi 4 / 5, Apple Silicon (via Docker Desktop), AWS Graviton |
+| `linux/arm/v7` | Raspberry Pi 2 / 3 running 32-bit Raspberry Pi OS                    |
+
+Docker automatically selects the correct image variant for your hardware — no `--platform` flag required.
+
+---
+
 ## Quick start
 
 ```bash
@@ -61,6 +75,9 @@ services:
 
       # Optional — overrides auto-detected Compose project name
       # docker-update-monitor.stack: "media"
+
+      # Optional — per-container cooldown, overrides the global UPDATE_COOLDOWN
+      # docker-update-monitor.update-cooldown: "3d"
 
   nginx:
     image: nginx:1.25.3
@@ -128,18 +145,19 @@ update-level finding for one container:
 
 ### General
 
-| Variable             | Default          | Description                                                         |
-| -------------------- | ---------------- | ------------------------------------------------------------------- |
-| `NOTIFY_CHANNELS`    | `webhook`        | Comma-separated list of notification channels: `webhook`, `email`   |
-| `DOCKERHUB_USERNAME` | _(empty)_        | Docker Hub username                                                 |
-| `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                          |
-| `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images |
-| `CRON_SCHEDULE`      | `0 * * * *`      | Cron expression for check schedule (standard 5-field cron)          |
-| `RUN_ON_STARTUP`     | `true`           | Run an update check immediately on startup                          |
-| `DRY_RUN`            | `false`          | Log only, no notifications sent                                     |
-| `LABEL_PREFIX`       | `update-monitor` | Label namespace                                                     |
-| `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                              |
-| `WEB_PORT`           | `8080`           | Port for the web dashboard and health endpoint                      |
+| Variable             | Default          | Description                                                                                                                                                                                                |
+| -------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NOTIFY_CHANNELS`    | `webhook`        | Comma-separated list of notification channels: `webhook`, `email`                                                                                                                                          |
+| `DOCKERHUB_USERNAME` | _(empty)_        | Docker Hub username                                                                                                                                                                                        |
+| `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                                                                                                                                                                 |
+| `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images                                                                                                                                        |
+| `CRON_SCHEDULE`      | `0 * * * *`      | Cron expression for check schedule (standard 5-field cron)                                                                                                                                                 |
+| `RUN_ON_STARTUP`     | `true`           | Run an update check immediately on startup                                                                                                                                                                 |
+| `DRY_RUN`            | `false`          | Log only, no notifications sent                                                                                                                                                                            |
+| `LABEL_PREFIX`       | `update-monitor` | Label namespace                                                                                                                                                                                            |
+| `UPDATE_COOLDOWN`    | `0`              | Global cooldown before notifying about a new update. Accepted formats: `0` (no cooldown), `12h`, `3d`, `2w`, `1m`. Can be overridden per container with the `docker-update-monitor.update-cooldown` label. |
+| `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                                                                                                                                                                     |
+| `WEB_PORT`           | `8080`           | Port for the web dashboard and health endpoint                                                                                                                                                             |
 
 ### Webhook channel
 

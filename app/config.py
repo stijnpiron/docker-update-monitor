@@ -26,6 +26,8 @@ SMTP_TLS          = os.environ.get("SMTP_TLS", "true").lower() == "true"
 WEB_PORT          = int(os.environ.get("WEB_PORT", "8080"))
 DASHBOARD_DATETIME_FORMAT = os.environ.get("DASHBOARD_DATETIME_FORMAT", "%d/%m/%Y %H:%M")
 
+UPDATE_COOLDOWN   = os.environ.get("UPDATE_COOLDOWN", "0")
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s  %(levelname)-8s  %(message)s",

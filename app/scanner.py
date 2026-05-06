@@ -1,13 +1,15 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import docker
 from docker.errors import DockerException
 
 import app.config as _config
+from app.cooldown import parse_cooldown
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
+from app.registry.manifest import fetch_manifest_list, is_platform_supported
 from app.version import find_updates
 from app.notifications import dispatch as notify
 from app.state import process_scan, mark_notified
@@ -43,6 +45,7 @@ def run_check() -> None:
     all_warnings: list[ScanWarning] = []
     skipped_containers: list[dict] = []
     monitored_versions: dict[tuple[str, str], tuple[str, str]] = {}
+    container_cooldowns: dict[str, object] = {}  # container_name → timedelta
     monitored_count = 0
 
     for container in containers:
@@ -71,6 +74,16 @@ def run_check() -> None:
             continue
 
         monitored_count += 1
+
+        # Parse per-container cooldown label; fall back to global config
+        cooldown_label = labels.get(f"{_config.LABEL_PREFIX}.update-cooldown", _config.UPDATE_COOLDOWN)
+        try:
+            container_cooldowns[container.name] = parse_cooldown(cooldown_label)
+        except ValueError:
+            _config.log.warning(
+                f"  [{container.name}] Invalid update-cooldown value '{cooldown_label}' — using no cooldown"
+            )
+            container_cooldowns[container.name] = parse_cooldown("0")
 
         try:
             re.compile(pattern)
@@ -153,12 +166,49 @@ def run_check() -> None:
         # Container fully validated — record its current version
         monitored_versions[(container.name, image_name)] = (current_tag, pattern)
 
+        # Determine whether to perform architecture compatibility checks
+        check_arch = labels.get(f"{_config.LABEL_PREFIX}.check-arch", "true").lower() != "false"
+        container_os: str = ""
+        container_arch: str = ""
+        if check_arch:
+            try:
+                image_attrs = container.image.attrs or {}
+                container_os = image_attrs.get("Os", "") or ""
+                container_arch = image_attrs.get("Architecture", "") or ""
+                if not container_os or not container_arch:
+                    _config.log.warning(
+                        f"  [{container.name}] Platform info unavailable from Docker API"
+                        " — skipping arch check"
+                    )
+                    check_arch = False
+            except Exception as exc:
+                _config.log.warning(
+                    f"  [{container.name}] Could not read platform info: {exc}"
+                    " — skipping arch check"
+                )
+                check_arch = False
+
         updates = find_updates(current_tag, all_tags, pattern)
 
         if not updates:
             _config.log.info(f"    No updates found (current={current_tag})")
         else:
             for update_type, new_tag in updates.items():
+                # Check architecture compatibility before reporting the update
+                if check_arch and container_os and container_arch:
+                    platforms = fetch_manifest_list(
+                        image_name, new_tag,
+                        _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+                        _config.GITHUB_TOKEN,
+                    )
+                    if not is_platform_supported(platforms, container_os, container_arch):
+                        _config.log.info(
+                            f"    Skipping {update_type.upper()} update {current_tag} → {new_tag}:"
+                            f" tag '{new_tag}' does not support"
+                            f" {container_os}/{container_arch}"
+                        )
+                        continue
+
                 _config.log.info(f"    {update_type.upper():5s} update: {current_tag} → {new_tag}")
                 all_updates.append(UpdateInfo(
                     container_name=container.name,
@@ -182,15 +232,45 @@ def run_check() -> None:
     # Persist state and categorize: new / known / resolved
     categorized = process_scan(all_updates, scan_time, current_versions=monitored_versions)
 
+    # Deduplicate: keep only the highest new_version per (container, image, update_type).
+    # The DB unique constraint already prevents exact duplicates; this guards against
+    # any edge case where the same container+image+type appears with different new_versions.
+    _seen: dict[tuple[str, str, str], str] = {}
+    _deduped: list[UpdateInfo] = []
+    for _u in categorized:
+        _key = (_u.container_name, _u.image, _u.update_type)
+        if _key not in _seen or (_u.new_version or "") > _seen[_key]:
+            _seen[_key] = _u.new_version or ""
+            _deduped.append(_u)
+    categorized = _deduped
+
     new_count = sum(1 for u in categorized if u.status == "new")
     known_count = sum(1 for u in categorized if u.status == "known")
     resolved_count = sum(1 for u in categorized if u.status == "resolved")
     _config.log.info(f"  New: {new_count}  |  Known: {known_count}  |  Resolved: {resolved_count}")
 
+    # Apply cooldown — suppress new/known updates that haven't matured yet
+    global_cooldown = parse_cooldown(_config.UPDATE_COOLDOWN)
+    actionable: list[UpdateInfo] = []
+    for u in categorized:
+        if u.status == "resolved":
+            actionable.append(u)
+            continue
+        cooldown = container_cooldowns.get(u.container_name, global_cooldown)
+        if cooldown and u.first_seen_at:
+            first_seen = datetime.fromisoformat(u.first_seen_at)
+            if scan_time - first_seen < cooldown:
+                _config.log.info(
+                    f"  [{u.container_name}] {u.current_version} → {u.new_version} "
+                    f"in cooldown ({cooldown}), skipping notification"
+                )
+                continue
+        actionable.append(u)
+
     # Notify with all categorized updates (grouped by status in payload)
-    notify(categorized, mismatches=all_mismatches, warnings=all_warnings)
-    if categorized:
-        mark_notified(categorized, scan_time)
+    notify(actionable, mismatches=all_mismatches, warnings=all_warnings)
+    if actionable:
+        mark_notified(actionable, scan_time)
 
     # Update health endpoint state
     warnings_data = [
