@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS updates (
 );
 """
 
+_DIGESTS_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS digests (
+    image TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (image, tag)
+);
+"""
+
 _METADATA_SCHEMA = """\
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -41,6 +51,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(_DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
+    conn.execute(_DIGESTS_SCHEMA)
     conn.execute(_METADATA_SCHEMA)
     run_migrations(conn)
     conn.commit()
@@ -262,5 +273,38 @@ def load_last_check() -> str | None:
             "SELECT value FROM metadata WHERE key = 'last_check'"
         ).fetchone()
         return row[0] if row else None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Digest tracking
+# ---------------------------------------------------------------------------
+
+def get_stored_digest(image: str, tag: str) -> str | None:
+    """Return the previously stored digest for (image, tag), or None."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT digest FROM digests WHERE image = ? AND tag = ?",
+            (image, tag),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def store_digest(image: str, tag: str, digest: str, timestamp: datetime | None = None) -> None:
+    """Insert or update the stored digest for (image, tag)."""
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+    ts = timestamp.isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO digests (image, tag, digest, updated_at) VALUES (?, ?, ?, ?)",
+            (image, tag, digest, ts),
+        )
+        conn.commit()
     finally:
         conn.close()

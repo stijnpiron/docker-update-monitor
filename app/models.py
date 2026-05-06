@@ -9,7 +9,7 @@ class UpdateInfo:
     image: str
     current_version: str
     new_version: str
-    update_type: str        # "patch" | "minor" | "major"
+    update_type: str        # "patch" | "minor" | "major" | "digest"
     status: str = ""        # "new" | "known" | "resolved"
     first_seen_at: str | None = None
 
