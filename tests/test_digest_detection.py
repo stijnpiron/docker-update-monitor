@@ -134,6 +134,94 @@ class TestDigestVersionResolution:
         )
         assert result is None
 
+    @patch("app.scanner.fetch_digest")
+    def test_resolve_digest_finds_git_hash_tag(self, mock_fetch_digest):
+        def digest_side_effect(image, tag, *args, **kwargs):
+            if tag == "sha-675e77e":
+                return "sha256:newdigest111"
+            return "sha256:other"
+
+        mock_fetch_digest.side_effect = digest_side_effect
+
+        result = _resolve_digest_to_tag(
+            "ghcr.io/myorg/myimage",
+            "sha256:newdigest111",
+            ["edge", "sha-675e77e"],
+            r"^(\d+)\.(\d+)\.(\d+)$",
+            current_tag="edge",
+        )
+        assert result == "sha-675e77e"
+
+    @patch("app.scanner.fetch_digest")
+    def test_resolve_digest_excludes_current_tag_from_fallback(self, mock_fetch_digest):
+        mock_fetch_digest.return_value = "sha256:target"
+
+        result = _resolve_digest_to_tag(
+            "myimage",
+            "sha256:target",
+            ["edge"],
+            r"^(\d+)\.(\d+)\.(\d+)$",
+            current_tag="edge",
+        )
+        assert result is None
+
+    @patch("app.scanner.fetch_digest")
+    def test_resolve_digest_prefers_git_hash_over_other_rolling_tags(self, mock_fetch_digest):
+        def digest_side_effect(image, tag, *args, **kwargs):
+            if tag in ("latest", "sha-abcdef1"):
+                return "sha256:target"
+            return "sha256:other"
+
+        mock_fetch_digest.side_effect = digest_side_effect
+
+        result = _resolve_digest_to_tag(
+            "myimage",
+            "sha256:target",
+            ["edge", "latest", "sha-abcdef1"],
+            r"^(\d+)\.(\d+)\.(\d+)$",
+            current_tag="edge",
+        )
+        assert result == "sha-abcdef1"
+
+
+class TestDigestGitHashTagIntegration:
+    """End-to-end: a rolling-tag container shows the git-hash tag as new version."""
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.fetch_all_tags", return_value=["edge", "sha-675e77e"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_digest_change_shows_git_hash_tag(
+        self, mock_docker, mock_token, mock_fetch_tags, mock_fetch_digest, mock_notify
+    ):
+        container = _make_container(
+            "myapp", "ghcr.io/myorg/myimage:edge",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        store_digest("ghcr.io/myorg/myimage", "edge", "sha256:olddigest000000000000")
+
+        def digest_side_effect(image, tag, *args, **kwargs):
+            if tag in ("edge", "sha-675e77e"):
+                return "sha256:newdigest111111111111"
+            return "sha256:other"
+
+        mock_fetch_digest.side_effect = digest_side_effect
+
+        with patch.object(config_mod, "GITHUB_TOKEN", "ghtoken"):
+            run_check()
+
+        assert mock_notify.called
+        updates_arg = mock_notify.call_args[0][0]
+        digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+        assert len(digest_updates) == 1
+        assert digest_updates[0].new_version == "sha-675e77e"
+        assert digest_updates[0].current_version == "edge"
+
 
 class TestDigestFallbackToShortDigest:
     """If no versioned tag matches, show the short digest."""
