@@ -35,7 +35,7 @@ def create_app() -> Flask:
         for u in updates:
             u["first_seen_at_display"] = _format_datetime(u.get("first_seen_at"))
 
-        # Sort by stack (default)
+        # Sort by stack then container name (default)
         updates.sort(key=lambda u: (u.get("stack") or "", u.get("container_name") or ""))
 
         with _state_lock:
