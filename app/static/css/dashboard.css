@@ -1,0 +1,285 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f8fafc;
+    color: #1e293b;
+    padding: 1rem;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+h1 {
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+    color: #1d4ed8;
+}
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.card {
+    background: #fff;
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .1);
+    text-align: center;
+}
+
+.card .value {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.card .label {
+    font-size: 0.8rem;
+    color: #64748b;
+    margin-top: 0.25rem;
+}
+
+.card--new .value {
+    color: #dc2626;
+}
+
+.card--known .value {
+    color: #d97706;
+}
+
+.card--resolved .value {
+    color: #16a34a;
+}
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.toolbar .meta {
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.btn {
+    background: #1d4ed8;
+    color: #fff;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.btn:hover {
+    background: #1e40af;
+}
+
+.btn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .1);
+}
+
+th,
+td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 0.85rem;
+}
+
+th {
+    background: #f1f5f9;
+    font-weight: 600;
+    color: #475569;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+th:hover {
+    background: #e2e8f0;
+}
+
+th .sort-arrow {
+    font-size: 0.7rem;
+    margin-left: 0.3rem;
+    opacity: 0.4;
+}
+
+th.sort-active .sort-arrow {
+    opacity: 1;
+}
+
+tr.status-new {
+    background: #fef2f2;
+}
+
+tr.status-new td:first-child {
+    border-left: 3px solid #dc2626;
+}
+
+tr.status-resolved {
+    opacity: 0.5;
+}
+
+.type-major {
+    color: #dc2626;
+    font-weight: 700;
+}
+
+.type-minor {
+    color: #d97706;
+    font-weight: 700;
+}
+
+.type-patch {
+    color: #2563eb;
+    font-weight: 700;
+}
+
+.type-digest {
+    color: #3aed55;
+    font-weight: 700;
+}
+
+.empty {
+    text-align: center;
+    padding: 2rem;
+    color: #64748b;
+}
+
+.update-banner {
+    display: none;
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1d4ed8;
+    color: #fff;
+    padding: 0.75rem 1.25rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+    z-index: 1000;
+    font-size: 0.9rem;
+    display: none;
+    align-items: center;
+    gap: 0.75rem;
+    animation: slideDown 0.3s ease-out;
+}
+
+.update-banner.visible {
+    display: flex;
+}
+
+.update-banner button {
+    background: #fff;
+    color: #1d4ed8;
+    border: none;
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.update-banner button:hover {
+    background: #e0e7ff;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-1rem);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+.card--warnings .value {
+    color: #d97706;
+}
+
+.card--skipped .value {
+    color: #64748b;
+}
+
+.section-heading {
+    font-size: 1.1rem;
+    margin: 1.5rem 0 0.75rem;
+    padding-left: 0.25rem;
+}
+
+.section-heading--warn {
+    color: #d97706;
+}
+
+.section-heading--muted {
+    color: #64748b;
+    font-size: 0.95rem;
+    cursor: pointer;
+    margin: 1.5rem 0 0.75rem;
+}
+
+.warnings-table {
+    margin-bottom: 1.5rem;
+}
+
+.warnings-table td:nth-child(3) {
+    color: #92400e;
+}
+
+.resolved-section {
+    margin-top: 0.5rem;
+}
+
+.skipped-section {
+    margin-top: 0.5rem;
+}
+
+.skipped-table {
+    margin-top: 0.5rem;
+}
+
+.skipped-table td {
+    color: #64748b;
+}
+
+@media (max-width: 600px) {
+    table {
+        font-size: 0.75rem;
+    }
+
+    th,
+    td {
+        padding: 0.4rem;
+    }
+
+    .cards {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

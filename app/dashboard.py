@@ -2,6 +2,7 @@
 
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, render_template
 
@@ -18,6 +19,16 @@ def _format_datetime(iso_str: str | None) -> str:
         return "—"
     try:
         dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is not None:
+            tz_name = _config.TZ
+            if tz_name:
+                try:
+                    dt = dt.astimezone(ZoneInfo(tz_name))
+                except ZoneInfoNotFoundError:
+                    _config.log.warning("Unknown timezone %r in TZ env var, falling back to system local timezone", tz_name)
+                    dt = dt.astimezone()
+            else:
+                dt = dt.astimezone()
         return dt.strftime(_config.DASHBOARD_DATETIME_FORMAT)
     except (ValueError, TypeError):
         return iso_str
@@ -35,7 +46,7 @@ def create_app() -> Flask:
         for u in updates:
             u["first_seen_at_display"] = _format_datetime(u.get("first_seen_at"))
 
-        # Sort by stack (default)
+        # Sort by stack then container name (default)
         updates.sort(key=lambda u: (u.get("stack") or "", u.get("container_name") or ""))
 
         with _state_lock:

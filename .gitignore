@@ -8,3 +8,6 @@ __pycache__/
 .github/skills
 docker-compose.debug.yml
 data-debug/
+.vscode/
+CLAUDE.md
+.claude/

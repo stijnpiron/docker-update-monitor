@@ -1,6 +1,8 @@
 import re
 from datetime import datetime, timedelta, timezone
 
+_GIT_HASH_RE = re.compile(r"sha-[a-f0-9]{7,}")
+
 import docker
 from docker.errors import DockerException
 
@@ -9,11 +11,54 @@ from app.cooldown import parse_cooldown
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
-from app.registry.manifest import fetch_manifest_list, is_platform_supported
+from app.registry.manifest import fetch_manifest_list, is_platform_supported, fetch_digest
 from app.version import find_updates
 from app.notifications import dispatch as notify
-from app.state import process_scan, mark_notified
+from app.state import process_scan, mark_notified, get_stored_digest, store_digest
 from app.health import update_state
+
+
+def _resolve_digest_to_tag(
+    image_name: str,
+    target_digest: str,
+    all_tags: list[str],
+    pattern: str,
+    current_tag: str = "",
+) -> str | None:
+    """Find which tag shares the same digest as target_digest.
+
+    First tries tags matching the version pattern (fast path for semver images).
+    Falls back to non-pattern, non-current tags when no versioned tag matches —
+    covers git-hash tags (e.g. sha-675e77e) used by GHCR and Docker Hub.
+    The pattern defines what is "versioned"; everything else is treated as rolling.
+    """
+    matching_tags = [t for t in all_tags if re.fullmatch(pattern, t)]
+    for tag in matching_tags:
+        tag_digest = fetch_digest(
+            image_name, tag,
+            _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+            _config.GITHUB_TOKEN,
+        )
+        if tag_digest == target_digest:
+            return tag
+
+    # Fallback: check non-pattern, non-current tags (rolling tags like sha-XXXXXXX).
+    # Prefer git-hash style tags first; cap at 20 to limit extra API calls.
+    fallback = [
+        t for t in all_tags
+        if t != current_tag and not re.fullmatch(pattern, t)
+    ]
+    fallback.sort(key=lambda t: (0 if _GIT_HASH_RE.fullmatch(t) else 1, t))
+    for tag in fallback[:20]:
+        tag_digest = fetch_digest(
+            image_name, tag,
+            _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+            _config.GITHUB_TOKEN,
+        )
+        if tag_digest == target_digest:
+            return tag
+
+    return None
 
 
 def run_check() -> None:
@@ -150,17 +195,62 @@ def run_check() -> None:
 
         # Check if pattern matches current tag before attempting update detection
         if not re.fullmatch(pattern, current_tag):
-            reason = f"Pattern '{pattern}' did not match current tag '{current_tag}'"
-            _config.log.warning(f"    {reason}")
-            all_mismatches.append(RegexMismatch(
-                container_name=container.name,
-                service_name=service_name,
-                stack=stack,
-                image=image_name,
-                current_tag=current_tag,
-                pattern=pattern,
-                reason=reason,
-            ))
+            # Digest-based detection: current tag doesn't match the version pattern
+            _config.log.info(f"    Tag '{current_tag}' does not match pattern — using digest mode")
+
+            current_digest = fetch_digest(
+                image_name, current_tag,
+                _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+                _config.GITHUB_TOKEN,
+            )
+            if not current_digest:
+                msg = f"Could not fetch digest for {image_name}:{current_tag}"
+                _config.log.warning(f"    {msg} — skipping")
+                all_warnings.append(ScanWarning(
+                    container_name=container.name, image=image_name,
+                    level="warning", message=msg,
+                ))
+                continue
+
+            stored_digest = get_stored_digest(image_name, current_tag)
+
+            if stored_digest is None:
+                # First scan — silently store the digest, no notification
+                _config.log.info(f"    First scan — storing digest {current_digest[:19]}")
+                store_digest(image_name, current_tag, current_digest)
+            elif current_digest == stored_digest:
+                _config.log.info(f"    Digest unchanged ({current_digest[:19]})")
+            else:
+                # Digest changed — resolve to a versioned tag
+                _config.log.info(f"    Digest changed: {stored_digest[:19]} → {current_digest[:19]}")
+
+                # Try to find which versioned tag matches the new digest
+                resolved_version = _resolve_digest_to_tag(
+                    image_name, current_digest, all_tags, pattern,
+                    current_tag=current_tag,
+                )
+
+                if resolved_version:
+                    new_version = resolved_version
+                    _config.log.info(f"    Resolved: {current_tag} → {new_version}")
+                else:
+                    # Fallback to full digest — usable as image@sha256:... reference
+                    new_version = current_digest
+                    _config.log.info(f"    Could not resolve to tag — using digest {new_version[:19]}")
+
+                all_updates.append(UpdateInfo(
+                    container_name=container.name,
+                    service_name=service_name,
+                    stack=stack,
+                    image=image_name,
+                    current_version=current_tag,
+                    new_version=new_version,
+                    update_type="digest",
+                ))
+
+                # Update stored digest
+                store_digest(image_name, current_tag, current_digest)
+
             continue
 
         # Container fully validated — record its current version

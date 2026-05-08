@@ -203,3 +203,122 @@ def is_platform_supported(
         p.get("os") == os and p.get("architecture") == architecture
         for p in platforms
     )
+
+
+# ---------------------------------------------------------------------------
+# Digest fetching
+# ---------------------------------------------------------------------------
+
+# Cache: (image_name, tag) → digest string or None
+_digest_cache: dict[tuple[str, str], Optional[str]] = {}
+
+
+def clear_digest_cache() -> None:
+    """Clear the digest cache. Used in tests."""
+    _digest_cache.clear()
+
+
+def _fetch_digest_from_url(url: str, auth_headers: dict) -> Optional[str]:
+    """HEAD the manifest URL and return the Docker-Content-Digest header."""
+    headers = {
+        **auth_headers,
+        "Accept": (
+            "application/vnd.docker.distribution.manifest.v2+json,"
+            "application/vnd.oci.image.manifest.v1+json,"
+            "application/vnd.docker.distribution.manifest.list.v2+json,"
+            "application/vnd.oci.image.index.v1+json"
+        ),
+    }
+    try:
+        resp = _http.http_session.head(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        return resp.headers.get("Docker-Content-Digest") or None
+    except Exception as exc:
+        log.warning(f"Digest fetch error ({url}): {exc}")
+        return None
+
+
+def _fetch_dockerhub_digest(image_name: str, tag: str, username: str, password: str) -> Optional[str]:
+    name = image_name.removeprefix("docker.io/")
+    parts = name.split("/")
+    if len(parts) == 1:
+        name = f"library/{name}"
+
+    scope = f"repository:{name}:pull"
+    token = _get_token(
+        "https://auth.docker.io/token",
+        service="registry.docker.io",
+        scope=scope,
+        username=username,
+        password=password,
+    )
+    if not token:
+        log.warning(f"DockerHub: could not obtain registry token for {name} — skipping digest fetch")
+        return None
+
+    url = f"https://registry-1.docker.io/v2/{name}/manifests/{tag}"
+    return _fetch_digest_from_url(url, {"Authorization": f"Bearer {token}"})
+
+
+def _fetch_ghcr_digest(image_name: str, tag: str, github_token: str) -> Optional[str]:
+    if not github_token:
+        log.warning(f"GHCR: no GITHUB_TOKEN — skipping digest fetch for {image_name}")
+        return None
+
+    image_ref = image_name.strip()
+    parsed = urlparse(image_ref)
+
+    parsed_host = ""
+    if parsed.scheme and parsed.netloc:
+        parsed_host = (parsed.hostname or "").lower()
+    elif "/" in image_ref:
+        parsed_host = image_ref.split("/", 1)[0].lower()
+
+    host = "lscr.io" if parsed_host == "lscr.io" else "ghcr.io"
+    path = image_ref.removeprefix(f"{host}/")
+
+    scope = f"repository:{path}:pull"
+    reg_token = _get_token(
+        f"https://{host}/token",
+        service=host,
+        scope=scope,
+        bearer_token=github_token,
+    )
+    if not reg_token:
+        log.warning(f"GHCR: could not obtain registry token for {path} — skipping digest fetch")
+        return None
+
+    url = f"https://{host}/v2/{path}/manifests/{tag}"
+    return _fetch_digest_from_url(url, {"Authorization": f"Bearer {reg_token}"})
+
+
+def fetch_digest(
+    image_name: str,
+    tag: str,
+    dockerhub_username: str,
+    dockerhub_password: str,
+    github_token: str,
+) -> Optional[str]:
+    """Return the manifest digest for *image_name*:*tag*.
+
+    Returns:
+        str: the Docker-Content-Digest value (e.g. "sha256:abc123...")
+        None: could not fetch.
+
+    Results are cached per (image_name, tag) for the lifetime of the process.
+    """
+    cache_key = (image_name, tag)
+    if cache_key in _digest_cache:
+        return _digest_cache[cache_key]
+
+    registry = detect_registry(image_name)
+    if registry == "dockerhub":
+        result = _fetch_dockerhub_digest(image_name, tag, dockerhub_username, dockerhub_password)
+    elif registry == "ghcr":
+        result = _fetch_ghcr_digest(image_name, tag, github_token)
+    else:
+        log.debug(f"Unknown registry for '{image_name}' — skipping digest fetch")
+        result = None
+
+    _digest_cache[cache_key] = result
+    return result
