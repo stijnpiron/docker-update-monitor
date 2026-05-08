@@ -172,8 +172,8 @@ class TestDigestFallbackToShortDigest:
         updates_arg = mock_notify.call_args[0][0]
         digest_updates = [u for u in updates_arg if u.update_type == "digest"]
         assert len(digest_updates) == 1
-        # Should show short digest (first 12 chars after "sha256:")
-        assert digest_updates[0].new_version == "abcdef123456"
+        # Should show full digest reference (usable as image@sha256:... reference)
+        assert digest_updates[0].new_version == "sha256:abcdef123456789abcdef123456789abcdef123456789"
 
 
 class TestDigestUnchanged:
