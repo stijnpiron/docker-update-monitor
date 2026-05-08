@@ -213,10 +213,9 @@ def run_check() -> None:
                     new_version = resolved_version
                     _config.log.info(f"    Resolved: {current_tag} → {new_version}")
                 else:
-                    # Fallback to short digest
-                    short = current_digest.replace("sha256:", "")[:12]
-                    new_version = short
-                    _config.log.info(f"    Could not resolve to tag — using short digest {new_version}")
+                    # Fallback to full digest — usable as image@sha256:... reference
+                    new_version = current_digest
+                    _config.log.info(f"    Could not resolve to tag — using digest {new_version[:19]}")
 
                 all_updates.append(UpdateInfo(
                     container_name=container.name,
