@@ -1,6 +1,8 @@
 import re
 from datetime import datetime, timedelta, timezone
 
+_GIT_HASH_RE = re.compile(r"sha-[a-f0-9]{7,}")
+
 import docker
 from docker.errors import DockerException
 
@@ -21,15 +23,16 @@ def _resolve_digest_to_tag(
     target_digest: str,
     all_tags: list[str],
     pattern: str,
+    current_tag: str = "",
 ) -> str | None:
-    """Find which versioned tag (matching *pattern*) shares the same digest.
+    """Find which tag shares the same digest as target_digest.
 
-    Iterates through tags that match the regex pattern and fetches their digest.
-    Returns the first tag whose digest matches *target_digest*, or None.
+    First tries tags matching the version pattern (fast path for semver images).
+    Falls back to non-pattern, non-current tags when no versioned tag matches —
+    covers git-hash tags (e.g. sha-675e77e) used by GHCR and Docker Hub.
+    The pattern defines what is "versioned"; everything else is treated as rolling.
     """
-    import re as _re
-    matching_tags = [t for t in all_tags if _re.fullmatch(pattern, t)]
-
+    matching_tags = [t for t in all_tags if re.fullmatch(pattern, t)]
     for tag in matching_tags:
         tag_digest = fetch_digest(
             image_name, tag,
@@ -38,6 +41,23 @@ def _resolve_digest_to_tag(
         )
         if tag_digest == target_digest:
             return tag
+
+    # Fallback: check non-pattern, non-current tags (rolling tags like sha-XXXXXXX).
+    # Prefer git-hash style tags first; cap at 20 to limit extra API calls.
+    fallback = [
+        t for t in all_tags
+        if t != current_tag and not re.fullmatch(pattern, t)
+    ]
+    fallback.sort(key=lambda t: (0 if _GIT_HASH_RE.fullmatch(t) else 1, t))
+    for tag in fallback[:20]:
+        tag_digest = fetch_digest(
+            image_name, tag,
+            _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+            _config.GITHUB_TOKEN,
+        )
+        if tag_digest == target_digest:
+            return tag
+
     return None
 
 
@@ -207,6 +227,7 @@ def run_check() -> None:
                 # Try to find which versioned tag matches the new digest
                 resolved_version = _resolve_digest_to_tag(
                     image_name, current_digest, all_tags, pattern,
+                    current_tag=current_tag,
                 )
 
                 if resolved_version:
