@@ -342,11 +342,158 @@ class TestApiLastScanRoute:
             _state["last_check"] = original
 
     def test_update_banner_in_dashboard_html(self, client):
-        from app.health import _state, _state_lock
         from unittest.mock import patch as _p
         with _p("app.dashboard.get_all_updates", return_value=[]):
             resp = client.get("/")
         html = resp.data.decode()
         assert 'id="update-banner"' in html
         assert "New scan results available" in html
-        assert "/api/last-scan" in html
+        assert "data-last-check" in html
+        assert "js/dashboard.js" in html
+
+
+class TestStaticAssets:
+    """Tests for external CSS and JS file references."""
+
+    @patch("app.dashboard.get_all_updates")
+    def test_css_referenced_via_url_for(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "css/dashboard.css" in html
+        assert "<link" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_js_referenced_with_defer(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "js/dashboard.js" in html
+        assert "defer" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_no_inline_style_block(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "<style>" not in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_no_jinja2_in_js(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "last_check_raw" not in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_data_last_check_on_body(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "data-last-check" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_static_css_file_served(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/static/css/dashboard.css")
+        assert resp.status_code == 200
+        assert b"font-family" in resp.data
+
+    @patch("app.dashboard.get_all_updates")
+    def test_static_js_file_served(self, mock_updates, client):
+        mock_updates.return_value = []
+        resp = client.get("/static/js/dashboard.js")
+        assert resp.status_code == 200
+        assert b"makeSortable" in resp.data
+
+
+class TestPendingResolvedSplit:
+    """Tests for the pending/resolved updates split."""
+
+    _base = {
+        "service_name": "",
+        "stack": "s",
+        "image": "img",
+        "current_version": "1.0",
+        "new_version": "2.0",
+        "update_type": "major",
+        "first_seen_at": "2026-04-30T10:00:00",
+    }
+
+    def _update(self, **kwargs):
+        return {**self._base, **kwargs}
+
+    @patch("app.dashboard.get_all_updates")
+    def test_pending_updates_in_primary_table(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="a", status="new"),
+            self._update(container_name="b", status="known"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert 'id="pending-table"' in html
+        assert "status-new" in html
+        assert "status-known" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_resolved_updates_in_details_element(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="c", status="resolved"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "<details" in html
+        assert 'id="resolved-table"' in html
+        assert "status-resolved" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_resolved_summary_shows_count(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="c", status="resolved"),
+            self._update(container_name="d", status="resolved"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "Resolved (2)" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_empty_state_when_no_pending(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="c", status="resolved"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "No updates found" in html
+        assert 'id="pending-table"' not in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_no_resolved_section_when_none(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="a", status="new"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert 'id="resolved-table"' not in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_pending_heading_shows_count(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="a", status="new"),
+            self._update(container_name="b", status="known"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "2 pending updates" in html
+
+    @patch("app.dashboard.get_all_updates")
+    def test_resolved_not_in_pending_table(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="pending-one", status="new"),
+            self._update(container_name="resolved-one", status="resolved"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        pending_pos = html.index('id="pending-table"')
+        resolved_pos = html.index('id="resolved-table"')
+        pending_section = html[pending_pos:resolved_pos]
+        assert "resolved-one" not in pending_section

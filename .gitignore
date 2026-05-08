@@ -9,3 +9,5 @@ __pycache__/
 docker-compose.debug.yml
 data-debug/
 .vscode/
+CLAUDE.md
+.claude/
