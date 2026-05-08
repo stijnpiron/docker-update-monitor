@@ -1,6 +1,7 @@
 """Unit tests for the Flask dashboard routes."""
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -198,6 +199,37 @@ class TestDatetimeFormatting:
         resp = client.get("/")
         html = resp.data.decode()
         assert "30/04/2026 14:05" in html
+
+    def test_utc_timestamp_converted_to_configured_timezone(self):
+        """A UTC timestamp with TZ=Europe/Brussels (UTC+2 in summer) shows +2h."""
+        with patch.object(config_mod, "TZ", "Europe/Brussels"):
+            result = _format_datetime("2026-04-30T08:00:00+00:00")
+        assert result == "30/04/2026 10:00"
+
+    def test_utc_timestamp_with_no_tz_uses_local(self):
+        """Without TZ set, a UTC timestamp is converted to the system local timezone."""
+        with patch.object(config_mod, "TZ", ""):
+            dt_utc = datetime(2026, 4, 30, 8, 0, 0, tzinfo=timezone.utc)
+            expected = dt_utc.astimezone().strftime(config_mod.DASHBOARD_DATETIME_FORMAT)
+            result = _format_datetime("2026-04-30T08:00:00+00:00")
+        assert result == expected
+
+    def test_unknown_timezone_falls_back_to_local(self):
+        """An unrecognised TZ value logs a warning and falls back to system local timezone."""
+        with patch.object(config_mod, "TZ", "Invalid/Timezone"):
+            dt_utc = datetime(2026, 4, 30, 8, 0, 0, tzinfo=timezone.utc)
+            expected = dt_utc.astimezone().strftime(config_mod.DASHBOARD_DATETIME_FORMAT)
+            with patch.object(config_mod.log, "warning") as mock_warn:
+                result = _format_datetime("2026-04-30T08:00:00+00:00")
+            mock_warn.assert_called_once()
+            assert "Invalid/Timezone" in mock_warn.call_args[0][1]
+        assert result == expected
+
+    def test_naive_datetime_not_converted(self):
+        """Naive datetimes (no tzinfo) are formatted as-is regardless of TZ."""
+        with patch.object(config_mod, "TZ", "Europe/Brussels"):
+            result = _format_datetime("2026-04-30T10:30:00")
+        assert result == "30/04/2026 10:30"
 
 
 class TestTableSorting:
