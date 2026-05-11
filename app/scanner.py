@@ -94,11 +94,12 @@ def run_check() -> None:
     monitored_count = 0
 
     for container in containers:
+        container_name: str = container.name or ""
         labels  = container.labels
         pattern = labels.get(f"{_config.LABEL_PREFIX}.tag-regex")
 
         if not pattern:
-            _config.log.debug(f"  [{container.name}] No '{_config.LABEL_PREFIX}.tag-regex' label — skipping")
+            _config.log.debug(f"  [{container_name}] No '{_config.LABEL_PREFIX}.tag-regex' label — skipping")
             # Determine image for display
             skip_image = ""
             if container.image.tags:
@@ -111,7 +112,7 @@ def run_check() -> None:
                 or "standalone"
             )
             skipped_containers.append({
-                "container_name": container.name,
+                "container_name": container_name,
                 "stack": skip_stack,
                 "image": skip_image,
                 "reason": f"No '{_config.LABEL_PREFIX}.tag-regex' label",
@@ -123,20 +124,20 @@ def run_check() -> None:
         # Parse per-container cooldown label; fall back to global config
         cooldown_label = labels.get(f"{_config.LABEL_PREFIX}.update-cooldown", _config.UPDATE_COOLDOWN)
         try:
-            container_cooldowns[container.name] = parse_cooldown(cooldown_label)
+            container_cooldowns[container_name] = parse_cooldown(cooldown_label)
         except ValueError:
             _config.log.warning(
-                f"  [{container.name}] Invalid update-cooldown value '{cooldown_label}' — using no cooldown"
+                f"  [{container_name}] Invalid update-cooldown value '{cooldown_label}' — using no cooldown"
             )
-            container_cooldowns[container.name] = parse_cooldown("0")
+            container_cooldowns[container_name] = parse_cooldown("0")
 
         try:
             re.compile(pattern)
         except re.error as exc:
             msg = f"Invalid tag-regex '{pattern}': {exc}"
-            _config.log.warning(f"  [{container.name}] {msg} — skipping")
+            _config.log.warning(f"  [{container_name}] {msg} — skipping")
             all_warnings.append(ScanWarning(
-                container_name=container.name, image="", level="warning", message=msg,
+                container_name=container_name, image="", level="warning", message=msg,
             ))
             continue
 
@@ -150,9 +151,9 @@ def run_check() -> None:
 
         if not image_ref:
             msg = "Cannot determine image reference"
-            _config.log.warning(f"  [{container.name}] {msg} — skipping")
+            _config.log.warning(f"  [{container_name}] {msg} — skipping")
             all_warnings.append(ScanWarning(
-                container_name=container.name, image="", level="warning", message=msg,
+                container_name=container_name, image="", level="warning", message=msg,
             ))
             continue
 
@@ -177,7 +178,7 @@ def run_check() -> None:
         )
         service_name = labels.get("com.docker.compose.service", "")
 
-        _config.log.info(f"  [{container.name}]  image={image_name}:{current_tag}  stack={stack}")
+        _config.log.info(f"  [{container_name}]  image={image_name}:{current_tag}  stack={stack}")
 
         # Fetch tags once per unique (image, tag) combination
         cache_key = (image_name, current_tag)
@@ -189,7 +190,7 @@ def run_check() -> None:
             msg = f"No tags returned for {image_name}"
             _config.log.warning(f"    {msg} — skipping")
             all_warnings.append(ScanWarning(
-                container_name=container.name, image=image_name, level="warning", message=msg,
+                container_name=container_name, image=image_name, level="warning", message=msg,
             ))
             continue
 
@@ -207,7 +208,7 @@ def run_check() -> None:
                 msg = f"Could not fetch digest for {image_name}:{current_tag}"
                 _config.log.warning(f"    {msg} — skipping")
                 all_warnings.append(ScanWarning(
-                    container_name=container.name, image=image_name,
+                    container_name=container_name, image=image_name,
                     level="warning", message=msg,
                 ))
                 continue
@@ -239,7 +240,7 @@ def run_check() -> None:
                     _config.log.info(f"    Could not resolve to tag — using digest {new_version[:19]}")
 
                 all_updates.append(UpdateInfo(
-                    container_name=container.name,
+                    container_name=container_name,
                     service_name=service_name,
                     stack=stack,
                     image=image_name,
@@ -251,10 +252,13 @@ def run_check() -> None:
                 # Update stored digest
                 store_digest(image_name, current_tag, current_digest)
 
+            # Track digest-mode containers so stale entries can be cleaned up
+            # when the rolling tag changes (e.g. :edge → :dev).
+            monitored_versions[(container_name, image_name)] = (current_tag, pattern)
             continue
 
         # Container fully validated — record its current version
-        monitored_versions[(container.name, image_name)] = (current_tag, pattern)
+        monitored_versions[(container_name, image_name)] = (current_tag, pattern)
 
         # Determine whether to perform architecture compatibility checks
         check_arch = labels.get(f"{_config.LABEL_PREFIX}.check-arch", "true").lower() != "false"
@@ -267,13 +271,13 @@ def run_check() -> None:
                 container_arch = image_attrs.get("Architecture", "") or ""
                 if not container_os or not container_arch:
                     _config.log.warning(
-                        f"  [{container.name}] Platform info unavailable from Docker API"
+                        f"  [{container_name}] Platform info unavailable from Docker API"
                         " — skipping arch check"
                     )
                     check_arch = False
             except Exception as exc:
                 _config.log.warning(
-                    f"  [{container.name}] Could not read platform info: {exc}"
+                    f"  [{container_name}] Could not read platform info: {exc}"
                     " — skipping arch check"
                 )
                 check_arch = False
@@ -301,7 +305,7 @@ def run_check() -> None:
 
                 _config.log.info(f"    {update_type.upper():5s} update: {current_tag} → {new_tag}")
                 all_updates.append(UpdateInfo(
-                    container_name=container.name,
+                    container_name=container_name,
                     service_name=service_name,
                     stack=stack,
                     image=image_name,

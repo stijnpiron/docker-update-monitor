@@ -100,3 +100,68 @@ def test_two_consecutive_scans():
     assert row_c["first_seen_at"] == t2.isoformat()
     assert row_c["last_seen_at"] == t2.isoformat()
     assert row_c["notified_at"] is None
+
+
+def test_digest_update_deleted_when_tag_changes():
+    """Digest update for :edge must be removed when container switches to :dev."""
+    t1 = datetime(2026, 5, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 5, 1, 11, 0, 0, tzinfo=timezone.utc)
+
+    edge_update = UpdateInfo(
+        container_name="app",
+        service_name="app",
+        stack="mystack",
+        image="myimage",
+        current_version="edge",
+        new_version="sha-abc1234",
+        update_type="digest",
+    )
+
+    # Scan 1: digest change detected while container runs :edge
+    result1 = state.process_scan([edge_update], scan_time=t1)
+    assert len(result1) == 1
+    assert result1[0].status == "new"
+    assert len(state.get_active_updates()) == 1
+
+    # Scan 2: container now runs :dev — no digest update detected for :dev yet.
+    # monitored_versions maps container → ("dev", pattern), no updates in scan.
+    cv = {("app", "myimage"): ("dev", r"^(\d+)\.(\d+)\.(\d+)$")}
+    result2 = state.process_scan([], scan_time=t2, current_versions=cv)
+
+    # The stale :edge entry must be deleted, not left as "known".
+    assert result2 == []
+    assert state.get_active_updates() == []
+
+
+def test_digest_update_kept_when_tag_unchanged():
+    """Digest update must not be discarded when container still uses the same rolling tag."""
+    t1 = datetime(2026, 5, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 5, 1, 11, 0, 0, tzinfo=timezone.utc)
+
+    dev_update = UpdateInfo(
+        container_name="app",
+        service_name="app",
+        stack="mystack",
+        image="myimage",
+        current_version="dev",
+        new_version="sha-abc1234",
+        update_type="digest",
+    )
+
+    # Scan 1: digest change detected while container runs :dev
+    state.process_scan([dev_update], scan_time=t1)
+    assert len(state.get_active_updates()) == 1
+
+    # Scan 2: registry digest unchanged this cycle — no update in scan results.
+    # Container is still running :dev so current_versions reflects that.
+    cv = {("app", "myimage"): ("dev", r"^(\d+)\.(\d+)\.(\d+)$")}
+    result2 = state.process_scan([], scan_time=t2, current_versions=cv)
+
+    # Entry must be preserved and returned as "known" — the container hasn't been updated yet.
+    assert len(result2) == 1
+    assert result2[0].status == "known"
+    assert result2[0].new_version == "sha-abc1234"
+    active = state.get_active_updates()
+    assert len(active) == 1
+    assert active[0]["current_version"] == "dev"
+    assert active[0]["new_version"] == "sha-abc1234"
