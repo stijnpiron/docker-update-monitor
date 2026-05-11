@@ -127,6 +127,17 @@ def process_scan(
 
             # Container was scanned — check if it was updated
             current_tag, pattern = current_versions[cv_key]
+
+            if row["update_type"] == "digest":
+                # For digest updates there is no semver ordering to compare.
+                # If the rolling tag changed (e.g. :edge → :dev) the old entry
+                # is obsolete — discard it.  If the tag is unchanged we cannot
+                # reliably tell whether the container was restarted with the new
+                # image, so leave the entry alone until the next digest change.
+                if current_tag != row["current_version"]:
+                    conn.execute("DELETE FROM updates WHERE id = ?", (row["id"],))
+                continue
+
             resolved = False
             try:
                 current_parsed = parse_tag(current_tag, pattern)
