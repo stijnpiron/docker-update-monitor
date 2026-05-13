@@ -387,7 +387,7 @@ class TestNotify:
                 image=f"img-{i}",
                 status="new",
             )
-            for i in range(60)
+            for i in range(90)
         ]
 
         with patch.object(config_mod, "TELEGRAM_BOT_TOKEN", "tok123"), \

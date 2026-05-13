@@ -43,10 +43,11 @@ def _build_lines(
         for u in sorted(group, key=lambda x: (x.stack or "", x.image or "")):
             service = _esc(u.service_name or u.container_name)
             stack = _esc(u.stack)
+            image = _esc(u.image or "")
             current = _esc_code(u.current_version or "—")
             new_ver = _esc_code(u.new_version)
             update_type = _esc(u.update_type)
-            lines.append(f"• \\[{stack}\\] {service}: `{current}` → `{new_ver}` \\({update_type}\\)")
+            lines.append(f"• \\[{stack}\\] {service} \\({image}\\): `{current}` → `{new_ver}` \\({update_type}\\)")
         lines.append("")
 
     if mismatches:
@@ -74,6 +75,8 @@ def _build_lines(
 
 def _chunk_messages(lines: list[str]) -> list[str]:
     """Split lines into message chunks that fit within Telegram's 4096-char limit."""
+    if not lines:
+        return [""]
     chunks: list[str] = []
     current_parts: list[str] = []
     current_len = 0
