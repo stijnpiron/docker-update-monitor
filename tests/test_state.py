@@ -446,6 +446,125 @@ class TestDigestDeduplication:
         assert digest_entries[0]["new_version"] == "sha-bbbbbb"
 
 
+class TestDigestAutoResolve:
+    """Digest update is resolved when the container repulls and runs the updated image."""
+
+    def _make_digest_update(self, **overrides) -> UpdateInfo:
+        defaults = dict(
+            container_name="app",
+            service_name="app",
+            stack="mystack",
+            image="nginx",
+            current_version="latest",
+            new_version="sha256:newdigest111",
+            update_type="digest",
+        )
+        defaults.update(overrides)
+        return UpdateInfo(**defaults)
+
+    def test_digest_resolved_when_container_repulled(self):
+        """Pending digest update is resolved when RepoDigests contains the new digest."""
+        u = self._make_digest_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.store_digest("nginx", "latest", "sha256:newdigest111")
+        state.process_scan([u], scan_time=t1)
+
+        cv = {("app", "nginx"): ("latest", r"^(\d+)\.(\d+)\.(\d+)$")}
+        rd = {("app", "nginx"): ["nginx@sha256:newdigest111"]}
+        result = state.process_scan([], scan_time=t2, current_versions=cv, running_digests=rd)
+
+        resolved = [r for r in result if r.status == "resolved"]
+        assert len(resolved) == 1
+        assert resolved[0].new_version == "sha256:newdigest111"
+        assert len(state.get_active_updates()) == 0
+
+    def test_digest_not_resolved_when_container_has_old_image(self):
+        """Update stays active when RepoDigests does not contain the new digest."""
+        u = self._make_digest_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.store_digest("nginx", "latest", "sha256:newdigest111")
+        state.process_scan([u], scan_time=t1)
+
+        cv = {("app", "nginx"): ("latest", r"^(\d+)\.(\d+)\.(\d+)$")}
+        rd = {("app", "nginx"): ["nginx@sha256:olddigest000"]}
+        result = state.process_scan([], scan_time=t2, current_versions=cv, running_digests=rd)
+
+        active = [r for r in result if r.status == "known"]
+        assert len(active) == 1
+        assert len(state.get_active_updates()) == 1
+
+    def test_digest_not_resolved_without_running_digests(self):
+        """Without running_digests, digest update is not resolved (backward compat)."""
+        u = self._make_digest_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.store_digest("nginx", "latest", "sha256:newdigest111")
+        state.process_scan([u], scan_time=t1)
+
+        cv = {("app", "nginx"): ("latest", r"^(\d+)\.(\d+)\.(\d+)$")}
+        result = state.process_scan([], scan_time=t2, current_versions=cv)
+
+        active = [r for r in result if r.status == "known"]
+        assert len(active) == 1
+
+    def test_digest_not_resolved_with_empty_repo_digests(self):
+        """Empty RepoDigests list leaves the update active."""
+        u = self._make_digest_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.store_digest("nginx", "latest", "sha256:newdigest111")
+        state.process_scan([u], scan_time=t1)
+
+        cv = {("app", "nginx"): ("latest", r"^(\d+)\.(\d+)\.(\d+)$")}
+        rd = {("app", "nginx"): []}
+        result = state.process_scan([], scan_time=t2, current_versions=cv, running_digests=rd)
+
+        active = [r for r in result if r.status == "known"]
+        assert len(active) == 1
+
+    def test_digest_resolved_entry_removed_from_active(self):
+        """Resolved digest entry no longer appears in get_active_updates()."""
+        u = self._make_digest_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.store_digest("nginx", "latest", "sha256:newdigest111")
+        state.process_scan([u], scan_time=t1)
+        assert len(state.get_active_updates()) == 1
+
+        cv = {("app", "nginx"): ("latest", r"^(\d+)\.(\d+)\.(\d+)$")}
+        rd = {("app", "nginx"): ["nginx@sha256:newdigest111"]}
+        state.process_scan([], scan_time=t2, current_versions=cv, running_digests=rd)
+
+        assert len(state.get_active_updates()) == 0
+        all_updates = state.get_all_updates()
+        assert len(all_updates) == 1
+        assert all_updates[0]["status"] == "resolved"
+
+    def test_digest_resolved_with_resolved_version_as_new_version(self):
+        """Works when new_version is a tag name (resolved via _resolve_digest_to_tag)."""
+        u = self._make_digest_update(new_version="1.2.0")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.store_digest("nginx", "latest", "sha256:newdigest111")
+        state.process_scan([u], scan_time=t1)
+
+        cv = {("app", "nginx"): ("latest", r"^(\d+)\.(\d+)\.(\d+)$")}
+        rd = {("app", "nginx"): ["nginx@sha256:newdigest111"]}
+        result = state.process_scan([], scan_time=t2, current_versions=cv, running_digests=rd)
+
+        resolved = [r for r in result if r.status == "resolved"]
+        assert len(resolved) == 1
+        assert resolved[0].new_version == "1.2.0"
+
+
 class TestProcessScanEdgeCases:
     def test_empty_container_name(self):
         """Update with empty container_name is stored and retrieved."""
