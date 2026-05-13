@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS updates (
     last_seen_at TEXT NOT NULL,
     notified_at TEXT,
     resolved_at TEXT,
-    UNIQUE(container_name, image, new_version, update_type)
+    UNIQUE(container_name, image, current_version, update_type)
 );
 """
 
@@ -93,19 +93,21 @@ def process_scan(
                 """INSERT INTO updates (container_name, service_name, image, current_version, new_version,
                                         update_type, stack, first_seen_at, last_seen_at, resolved_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                   ON CONFLICT(container_name, image, new_version, update_type) DO UPDATE SET
+                   ON CONFLICT(container_name, image, current_version, update_type) DO UPDATE SET
+                       new_version = excluded.new_version,
                        last_seen_at = excluded.last_seen_at,
-                       current_version = excluded.current_version,
                        service_name = excluded.service_name,
                        stack = excluded.stack,
-                       resolved_at = NULL""",
+                       resolved_at = NULL,
+                       notified_at = CASE WHEN excluded.new_version != updates.new_version THEN NULL ELSE updates.notified_at END,
+                       first_seen_at = CASE WHEN excluded.new_version != updates.new_version THEN excluded.first_seen_at ELSE updates.first_seen_at END""",
                 (u.container_name, u.service_name, u.image, u.current_version, u.new_version,
                  u.update_type, u.stack, ts, ts),
             )
 
         # --- resolve or delete absent entries ---
         current_keys = {
-            (u.container_name, u.image, u.new_version, u.update_type)
+            (u.container_name, u.image, u.current_version, u.update_type)
             for u in updates
         }
 
@@ -117,7 +119,7 @@ def process_scan(
         resolved_ids: list[int] = []
 
         for row in active_rows:
-            key = (row["container_name"], row["image"], row["new_version"], row["update_type"])
+            key = (row["container_name"], row["image"], row["current_version"], row["update_type"])
             if key in current_keys:
                 continue  # still detected, already upserted
 
