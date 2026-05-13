@@ -62,6 +62,7 @@ def process_scan(
     updates: list[UpdateInfo],
     scan_time: datetime | None = None,
     current_versions: dict[tuple[str, str], tuple[str, str]] | None = None,
+    running_digests: dict[tuple[str, str], list[str]] | None = None,
 ) -> list[UpdateInfo]:
     """Upsert scan results, resolve or delete absent entries, return updates with status.
 
@@ -75,6 +76,11 @@ def process_scan(
     * If the container's current version ≥ the stored ``new_version`` → **resolved**
       (the user updated the container).
     * Otherwise → **deleted** (the upstream version was yanked / superseded).
+
+    *running_digests* maps ``(container_name, image)`` → list of RepoDigests strings
+    (e.g. ``["nginx@sha256:abc123..."]``) for digest-mode containers.  When provided,
+    a digest update entry is resolved if the container's running image already contains
+    the stored (new) digest — meaning the user repulled and restarted the container.
 
     Entries for containers *not* in *current_versions* are left untouched (the
     container may have been temporarily unreachable).
@@ -133,11 +139,26 @@ def process_scan(
             if row["update_type"] == "digest":
                 # For digest updates there is no semver ordering to compare.
                 # If the rolling tag changed (e.g. :edge → :dev) the old entry
-                # is obsolete — discard it.  If the tag is unchanged we cannot
-                # reliably tell whether the container was restarted with the new
-                # image, so leave the entry alone until the next digest change.
+                # is obsolete — discard it.  If the tag is unchanged, check
+                # whether the container is now running the updated image by
+                # comparing the stored (new) digest against its RepoDigests.
                 if current_tag != row["current_version"]:
                     conn.execute("DELETE FROM updates WHERE id = ?", (row["id"],))
+                elif running_digests is not None:
+                    container_repo_digests = running_digests.get(cv_key, [])
+                    if container_repo_digests:
+                        digest_row = conn.execute(
+                            "SELECT digest FROM digests WHERE image = ? AND tag = ?",
+                            (row["image"], row["current_version"]),
+                        ).fetchone()
+                        if digest_row:
+                            stored_digest = digest_row["digest"]
+                            if any(stored_digest in rd for rd in container_repo_digests):
+                                conn.execute(
+                                    "UPDATE updates SET resolved_at = ? WHERE id = ?",
+                                    (ts, row["id"]),
+                                )
+                                resolved_ids.append(row["id"])
                 continue
 
             resolved = False
