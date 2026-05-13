@@ -90,6 +90,7 @@ def run_check() -> None:
     all_warnings: list[ScanWarning] = []
     skipped_containers: list[dict] = []
     monitored_versions: dict[tuple[str, str], tuple[str, str]] = {}
+    running_digests: dict[tuple[str, str], list[str]] = {}
     container_cooldowns: dict[str, object] = {}  # container_name → timedelta
     monitored_count = 0
 
@@ -253,8 +254,12 @@ def run_check() -> None:
                 store_digest(image_name, current_tag, current_digest)
 
             # Track digest-mode containers so stale entries can be cleaned up
-            # when the rolling tag changes (e.g. :edge → :dev).
+            # when the rolling tag changes (e.g. :edge → :dev), and so that
+            # auto-resolution can compare against the running image's RepoDigests.
             monitored_versions[(container_name, image_name)] = (current_tag, pattern)
+            running_digests[(container_name, image_name)] = (
+                container.image.attrs.get("RepoDigests") or []
+            )
             continue
 
         # Container fully validated — record its current version
@@ -324,7 +329,11 @@ def run_check() -> None:
     scan_time = datetime.now(timezone.utc)
 
     # Persist state and categorize: new / known / resolved
-    categorized = process_scan(all_updates, scan_time, current_versions=monitored_versions)
+    categorized = process_scan(
+        all_updates, scan_time,
+        current_versions=monitored_versions,
+        running_digests=running_digests,
+    )
 
     # Deduplicate: keep only the highest new_version per (container, image, update_type).
     # The DB unique constraint already prevents exact duplicates; this guards against

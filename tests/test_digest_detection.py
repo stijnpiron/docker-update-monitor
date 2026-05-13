@@ -8,7 +8,7 @@ import pytest
 from app import config as config_mod
 from app.models import UpdateInfo
 from app.scanner import run_check, _resolve_digest_to_tag
-from app.state import get_stored_digest, store_digest
+from app.state import get_stored_digest, store_digest, process_scan, get_active_updates
 
 
 def _make_container(name, image_tag, labels, has_image_tags=True):
@@ -347,6 +347,79 @@ class TestDigestStateDB:
         store_digest("nginx", "nightly", "sha256:nightly_digest")
         assert get_stored_digest("nginx", "latest") == "sha256:latest_digest"
         assert get_stored_digest("nginx", "nightly") == "sha256:nightly_digest"
+
+
+class TestDigestAutoResolveAfterRepull:
+    """After repulling the updated image, the next scan resolves the pending update."""
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value="sha256:newdigest111111")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "1.1.0", "latest"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_repulled_container_resolves_pending_update(
+        self, mock_docker, mock_token, mock_fetch_tags, mock_fetch_digest, mock_notify
+    ):
+        """The pending digest update is auto-resolved when the container runs the new image."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        container.image.attrs = {"RepoDigests": ["myimage@sha256:newdigest111111"]}
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        # Simulate prior scan: digest was stored and update entry created
+        store_digest("myimage", "latest", "sha256:newdigest111111")
+        process_scan([UpdateInfo(
+            container_name="myapp", service_name="", stack="standalone",
+            image="myimage", current_version="latest",
+            new_version="sha256:newdigest111111", update_type="digest",
+        )])
+        assert len(get_active_updates()) == 1
+
+        # Registry still returns the same new digest (unchanged from scanner's perspective)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Pending update should be resolved — container is running the updated image
+        assert len(get_active_updates()) == 0
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value="sha256:newdigest111111")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "1.1.0", "latest"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_not_repulled_container_keeps_pending_update(
+        self, mock_docker, mock_token, mock_fetch_tags, mock_fetch_digest, mock_notify
+    ):
+        """Update stays active when the container is still running the old image."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        # Container still has the old image in RepoDigests
+        container.image.attrs = {"RepoDigests": ["myimage@sha256:olddigest000000"]}
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        store_digest("myimage", "latest", "sha256:newdigest111111")
+        process_scan([UpdateInfo(
+            container_name="myapp", service_name="", stack="standalone",
+            image="myimage", current_version="latest",
+            new_version="sha256:newdigest111111", update_type="digest",
+        )])
+        assert len(get_active_updates()) == 1
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Update should still be active
+        assert len(get_active_updates()) == 1
 
 
 class TestDigestFetchFailure:
