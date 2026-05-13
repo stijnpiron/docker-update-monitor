@@ -11,11 +11,25 @@ from app.cooldown import parse_cooldown
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
-from app.registry.manifest import fetch_manifest_list, is_platform_supported, fetch_digest
+from app.registry.manifest import fetch_manifest_list, is_platform_supported, fetch_digest, fetch_platform_digest
 from app.version import find_updates
 from app.notifications import dispatch as notify
 from app.state import process_scan, mark_notified, get_stored_digest, store_digest
 from app.health import update_state
+
+
+def _extract_local_digest(repo_digests: list[str]) -> str | None:
+    """Extract the first sha256 digest from a Docker RepoDigests list.
+
+    RepoDigests entries use the format "image@sha256:digest".
+    Returns the digest portion (e.g. "sha256:abc123...") of the first valid entry.
+    """
+    for entry in repo_digests:
+        if "@" in entry:
+            _, digest = entry.split("@", 1)
+            if digest.startswith("sha256:"):
+                return digest
+    return None
 
 
 def _resolve_digest_to_tag(
@@ -97,9 +111,10 @@ def run_check() -> None:
     for container in containers:
         container_name: str = container.name or ""
         labels  = container.labels
+        mode    = labels.get(f"{_config.LABEL_PREFIX}.mode", "").lower()
         pattern = labels.get(f"{_config.LABEL_PREFIX}.tag-regex")
 
-        if not pattern:
+        if not pattern and mode != "digest":
             _config.log.debug(f"  [{container_name}] No '{_config.LABEL_PREFIX}.tag-regex' label — skipping")
             # Determine image for display
             skip_image = ""
@@ -132,15 +147,16 @@ def run_check() -> None:
             )
             container_cooldowns[container_name] = parse_cooldown("0")
 
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            msg = f"Invalid tag-regex '{pattern}': {exc}"
-            _config.log.warning(f"  [{container_name}] {msg} — skipping")
-            all_warnings.append(ScanWarning(
-                container_name=container_name, image="", level="warning", message=msg,
-            ))
-            continue
+        if pattern:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                msg = f"Invalid tag-regex '{pattern}': {exc}"
+                _config.log.warning(f"  [{container_name}] {msg} — skipping")
+                all_warnings.append(ScanWarning(
+                    container_name=container_name, image="", level="warning", message=msg,
+                ))
+                continue
 
         # Resolve full image reference
         image_ref = None
@@ -180,6 +196,98 @@ def run_check() -> None:
         service_name = labels.get("com.docker.compose.service", "")
 
         _config.log.info(f"  [{container_name}]  image={image_name}:{current_tag}  stack={stack}")
+
+        if mode == "digest":
+            # Explicit digest mode: compare the local running image digest (RepoDigests)
+            # against the remote registry digest via HEAD request.  Works on first scan —
+            # no need for a silent storage phase.
+            repo_digests = container.image.attrs.get("RepoDigests") or []
+            local_digest = _extract_local_digest(repo_digests)
+
+            if not local_digest:
+                msg = f"No RepoDigests available for {image_name}:{current_tag} — cannot compare"
+                _config.log.warning(f"    {msg}")
+                all_warnings.append(ScanWarning(
+                    container_name=container_name, image=image_name, level="warning", message=msg,
+                ))
+                monitored_versions[(container_name, image_name)] = (current_tag, pattern or "")
+                running_digests[(container_name, image_name)] = repo_digests
+                continue
+
+            remote_digest = fetch_digest(
+                image_name, current_tag,
+                _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+                _config.GITHUB_TOKEN,
+            )
+            if not remote_digest:
+                msg = f"Could not fetch remote digest for {image_name}:{current_tag}"
+                _config.log.warning(f"    {msg}")
+                all_warnings.append(ScanWarning(
+                    container_name=container_name, image=image_name, level="warning", message=msg,
+                ))
+                monitored_versions[(container_name, image_name)] = (current_tag, pattern or "")
+                running_digests[(container_name, image_name)] = repo_digests
+                continue
+
+            if local_digest == remote_digest:
+                _config.log.info(f"    Digest up to date ({local_digest[:19]})")
+            else:
+                # Multi-arch: the manifest list digest may differ from the platform-specific
+                # digest stored in RepoDigests.  Check whether the platform-specific digest
+                # is unchanged before reporting an update.
+                platform_match = False
+                try:
+                    image_attrs = container.image.attrs or {}
+                    container_os = image_attrs.get("Os", "") or ""
+                    container_arch = image_attrs.get("Architecture", "") or ""
+                    if container_os and container_arch:
+                        platform_digest = fetch_platform_digest(
+                            image_name, current_tag,
+                            container_os, container_arch,
+                            _config.DOCKERHUB_USER, _config.DOCKERHUB_PASS,
+                            _config.GITHUB_TOKEN,
+                        )
+                        if platform_digest and platform_digest == local_digest:
+                            platform_match = True
+                            _config.log.info(
+                                f"    Platform digest unchanged for"
+                                f" {container_os}/{container_arch} ({local_digest[:19]})"
+                            )
+                except Exception as exc:
+                    _config.log.debug(f"    Could not check platform digest: {exc}")
+
+                if not platform_match:
+                    _config.log.info(
+                        f"    Digest changed: {local_digest[:19]} → {remote_digest[:19]}"
+                    )
+                    # Optionally resolve the new digest to a versioned tag
+                    resolved_version = None
+                    if pattern:
+                        cache_key = (image_name, current_tag)
+                        if cache_key not in tags_cache:
+                            tags_cache[cache_key] = fetch_all_tags(
+                                image_name, token, _config.GITHUB_TOKEN, current_tag
+                            )
+                        all_tags = tags_cache[cache_key]
+                        if all_tags:
+                            resolved_version = _resolve_digest_to_tag(
+                                image_name, remote_digest, all_tags, pattern,
+                                current_tag=current_tag,
+                            )
+                    new_version = resolved_version or remote_digest
+                    all_updates.append(UpdateInfo(
+                        container_name=container_name,
+                        service_name=service_name,
+                        stack=stack,
+                        image=image_name,
+                        current_version=current_tag,
+                        new_version=new_version,
+                        update_type="digest",
+                    ))
+
+            monitored_versions[(container_name, image_name)] = (current_tag, pattern or "")
+            running_digests[(container_name, image_name)] = repo_digests
+            continue
 
         # Fetch tags once per unique (image, tag) combination
         cache_key = (image_name, current_tag)

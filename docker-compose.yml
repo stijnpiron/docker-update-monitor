@@ -53,8 +53,15 @@ services:
 
       # Label namespace (default: docker-update-monitor)
       # LABEL_PREFIX: "docker-update-monitor"
-      # Only docker containers with docker-update-monitor.tag-regex are monitored
-      # Example: "docker-update-monitor.tag-regex=^v?\\d+\\.\\
+      # Containers are monitored when they carry at least one of these labels:
+      #   docker-update-monitor.tag-regex  — semver detection (and implicit digest fallback
+      #                                      when the current tag does not match the regex)
+      #   docker-update-monitor.mode=digest — explicit digest mode: compares the running
+      #                                       image's RepoDigests against the registry on
+      #                                       every scan; works from the first scan without
+      #                                       a silent warm-up. Can be combined with
+      #                                       tag-regex to resolve the new digest to a
+      #                                       versioned tag.
 
       # Log verbosity: DEBUG | INFO | WARNING | ERROR
       LOG_LEVEL: "INFO"

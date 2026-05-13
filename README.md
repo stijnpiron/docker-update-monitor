@@ -14,15 +14,26 @@ payload to a webhook when updates are found.
 ## How it works
 
 1. Reads all running containers from the Docker socket.
-2. For each container that has the `docker-update-monitor.tag-regex` label, it:
-   - Determines the current image tag.
-   - Fetches **all** available tags from Docker Hub in a single paginated sweep
-     (tags are cached per image, so multiple containers sharing the same image
-     only trigger one API call).
+2. For each monitored container it picks a detection mode:
+
+   **Semver mode** (container has `docker-update-monitor.tag-regex` and the current tag matches it)
+   - Fetches all available tags from the registry.
    - Applies your regex to parse version numbers from each tag.
-   - Finds the **best** (highest) update per level — one for patch, one for
-     minor, one for major — and deduplicates. You never receive intermediate
-     versions, only the latest available at each update level.
+   - Finds the **best** (highest) update per level — one for patch, one for minor, one for major.
+     You never receive intermediate versions, only the latest available at each level.
+
+   **Implicit digest mode** (container has `tag-regex` but the current tag does _not_ match it — e.g. `:latest`, `:edge`)
+   - Compares the registry manifest digest across scans.
+   - Silent on the first scan; reports a `digest` update when the digest changes on a later scan.
+   - Attempts to resolve the new digest to a versioned tag; falls back to the raw digest.
+
+   **Explicit digest mode** (container has `docker-update-monitor.mode: digest`)
+   - Compares the running image's local digest (`RepoDigests`) against the current registry digest via a single `HEAD` request.
+   - Works on the **first scan** — no silent warm-up scan required.
+   - For multi-arch images, falls back to a platform-specific digest check to avoid false positives when only another architecture's layer was updated.
+   - Can be combined with `tag-regex` to also resolve the new digest to a versioned tag.
+   - Takes precedence over semver detection when both labels are set.
+
 3. POSTs all found updates to your webhook endpoint.
 
 ---
@@ -70,7 +81,7 @@ services:
   sonarr:
     image: linuxserver/sonarr:4.0.2.1183
     labels:
-      # Required — regex with capture groups for (major, minor, patch)
+      # Required for semver detection — regex with capture groups for (major, minor, patch)
       docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)$"
 
       # Optional — overrides auto-detected Compose project name
@@ -84,10 +95,35 @@ services:
     labels:
       docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
 
-  # Containers WITHOUT the label are silently ignored
+  # Rolling-tag container monitored via explicit digest mode (no tag-regex needed)
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:latest
+    labels:
+      docker-update-monitor.mode: "digest"
+
+  # Rolling-tag with semver resolution: digest mode + tag-regex resolves the new
+  # digest to a versioned tag when one is available
+  myapp:
+    image: myregistry/myapp:edge
+    labels:
+      docker-update-monitor.mode: "digest"
+      docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
+
+  # Containers WITHOUT any monitoring label are silently ignored
   redis:
     image: redis:7
 ```
+
+### Detection mode reference
+
+| Labels set | Tag matches regex? | Mode used |
+|---|---|---|
+| `tag-regex` only | Yes | Semver |
+| `tag-regex` only | No | Implicit digest (scan-to-scan comparison) |
+| `mode: digest` only | — | Explicit digest (RepoDigests vs registry) |
+| `mode: digest` + `tag-regex` | Any | Explicit digest (semver bypassed; regex used only for version resolution) |
+
+> **Explicit vs implicit digest:** The explicit `mode: digest` label compares the running image's local digest against the registry on every scan, including the first. The implicit fallback (tag doesn't match `tag-regex`) compares the registry digest across two consecutive scans and is silent on the first. Use `mode: digest` when your container exclusively uses rolling tags and you want immediate detection.
 
 ### Regex tips
 
@@ -137,7 +173,10 @@ update-level finding for one container:
 ]
 ```
 
-`update_type` is one of `patch`, `minor`, or `major`.
+`update_type` is one of `patch`, `minor`, `major`, or `digest`.
+
+For digest updates the `new_version` field contains either a resolved versioned tag (when one
+could be matched to the new digest) or the raw registry digest (`sha256:…`).
 
 ---
 
@@ -224,7 +263,7 @@ The monitor includes a built-in web dashboard accessible on port `8080` (configu
 - **Update table** — all detected updates with stack, container, image, versions, type, status, and first-seen date
 - **Sortable columns** — click any column header to sort; default sort is by stack
 - **Warnings section** — scan warnings and errors (invalid regex, missing tags, pattern mismatches)
-- **Not Monitored section** — collapsible list of containers without the `tag-regex` label, with reasons
+- **Not Monitored section** — collapsible list of containers without any monitoring label (`tag-regex` or `mode: digest`), with reasons
 - **Scan Now button** — trigger an immediate scan from the UI
 - **Auto-refresh** — polls for changes every 60 seconds
 - **Responsive** — works on desktop and mobile
