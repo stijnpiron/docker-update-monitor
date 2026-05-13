@@ -147,7 +147,7 @@ update-level finding for one container:
 
 | Variable             | Default          | Description                                                                                                                                                                                                |
 | -------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NOTIFY_CHANNELS`    | `webhook`        | Comma-separated list of notification channels: `webhook`, `email`                                                                                                                                          |
+| `NOTIFY_CHANNELS`    | `webhook`        | Comma-separated list of notification channels: `webhook`, `email`, `telegram`                                                                                                                              |
 | `DOCKERHUB_USERNAME` | _(empty)_        | Docker Hub username                                                                                                                                                                                        |
 | `DOCKERHUB_PASSWORD` | _(empty)_        | Docker Hub password or PAT                                                                                                                                                                                 |
 | `GITHUB_TOKEN`       | _(empty)_        | GitHub PAT with `read:packages` scope — required for ghcr.io images                                                                                                                                        |
@@ -182,6 +182,22 @@ update-level finding for one container:
 > **Note:** If `NOTIFY_CHANNELS` includes `email` but `SMTP_HOST`, `SMTP_FROM`,
 > or `SMTP_TO` are not set, the email channel logs a warning and is skipped —
 > the application does not crash.
+
+### Telegram channel
+
+| Variable              | Default   | Description                                                   |
+| --------------------- | --------- | ------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`  | _(empty)_ | Bot token from [@BotFather](https://t.me/BotFather) (required for Telegram) |
+| `TELEGRAM_CHAT_ID`    | _(empty)_ | Target chat or channel ID (required for Telegram)             |
+
+To set up a Telegram bot:
+1. Message [@BotFather](https://t.me/BotFather) and run `/newbot` to get a token.
+2. Add the bot to your group/channel, or start a direct chat.
+3. Retrieve the chat ID (e.g. via `https://api.telegram.org/bot<TOKEN>/getUpdates`).
+
+> **Note:** If `NOTIFY_CHANNELS` includes `telegram` but `TELEGRAM_BOT_TOKEN`
+> or `TELEGRAM_CHAT_ID` are not set, the Telegram channel logs an error and is
+> skipped — the application does not crash.
 
 > **Note:** The `docker-compose.yml` in this repo sets `CRON_SCHEDULE` to
 > `0 3 * * 7` (every Sunday at 03:00), overriding the code default of
@@ -336,5 +352,6 @@ tests/
 ├── test_http_session.py        # HTTP session/retry config
 ├── test_regex_validation.py    # Invalid regex handling
 ├── test_graceful_shutdown.py   # SIGTERM/SIGINT handling
-└── test_run_on_startup.py      # RUN_ON_STARTUP behavior
+├── test_run_on_startup.py      # RUN_ON_STARTUP behavior
+└── test_notifications_telegram.py  # Telegram notification tests
 ```

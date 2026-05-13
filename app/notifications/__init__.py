@@ -2,6 +2,7 @@ import app.config as _config
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.notifications.webhook import notify as webhook_notify
 from app.notifications.email import notify as email_notify
+from app.notifications.telegram import notify as telegram_notify
 
 
 def dispatch(
@@ -19,5 +20,7 @@ def dispatch(
             webhook_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
         elif channel == "email":
             email_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
+        elif channel == "telegram":
+            telegram_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
         else:
             _config.log.warning(f"Unknown notification channel '{channel}' — skipping")
