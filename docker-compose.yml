@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
 
     environment:
-      # Notification channels: comma-separated list of "webhook", "email"
+      # Notification channels: comma-separated list of "webhook", "email", "telegram"
       # Default: webhook (backward compatible)
       NOTIFY_CHANNELS: "${NOTIFY_CHANNELS:-webhook}"
 
@@ -33,6 +33,11 @@ services:
       SMTP_FROM: "${SMTP_FROM}"
       SMTP_TO: "${SMTP_TO}"
       SMTP_TLS: "${SMTP_TLS:-true}"
+
+      # --- Telegram channel ---
+      # Required (if using telegram): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID}"
 
       # Cron schedule for checks (default: every hour on the hour)
       # Standard 5-field cron: minute hour day month weekday

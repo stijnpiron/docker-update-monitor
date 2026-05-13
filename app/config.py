@@ -23,6 +23,9 @@ SMTP_FROM         = os.environ.get("SMTP_FROM", "")
 SMTP_TO           = [addr.strip() for addr in os.environ.get("SMTP_TO", "").split(",") if addr.strip()]
 SMTP_TLS          = os.environ.get("SMTP_TLS", "true").lower() == "true"
 
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+
 WEB_PORT          = int(os.environ.get("WEB_PORT", "8080"))
 DASHBOARD_DATETIME_FORMAT = os.environ.get("DASHBOARD_DATETIME_FORMAT", "%d/%m/%Y %H:%M")
 TZ                = os.environ.get("TZ", "")
