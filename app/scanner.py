@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 _GIT_HASH_RE = re.compile(r"sha-[a-f0-9]{7,}")
@@ -14,8 +15,9 @@ from app.registry.dockerhub import get_dockerhub_token
 from app.registry.manifest import fetch_manifest_list, is_platform_supported, fetch_digest, fetch_platform_digest
 from app.version import find_updates
 from app.notifications import dispatch as notify
-from app.state import process_scan, mark_notified, get_stored_digest, store_digest
+from app.state import process_scan, mark_notified, get_stored_digest, store_digest, get_all_updates
 from app.health import update_state
+from app.metrics import check_errors_total, update_after_scan
 
 
 def _extract_local_digest(repo_digests: list[str]) -> str | None:
@@ -80,10 +82,13 @@ def run_check() -> None:
     _config.log.info("Starting update check")
     _config.log.info("=" * 60)
 
+    _scan_start = time.monotonic()
+
     try:
         client = docker.from_env()
     except DockerException as exc:
         _config.log.error(f"Cannot connect to Docker: {exc}")
+        check_errors_total.inc()
         return
 
     token = get_dockerhub_token(_config.DOCKERHUB_USER, _config.DOCKERHUB_PASS)
@@ -482,6 +487,16 @@ def run_check() -> None:
     notify(actionable, mismatches=all_mismatches, warnings=all_warnings)
     if actionable:
         mark_notified(actionable, scan_time)
+
+    # Update Prometheus metrics
+    if all_warnings:
+        check_errors_total.inc(len(all_warnings))
+    update_after_scan(
+        monitored=monitored_count,
+        updates=get_all_updates(),
+        duration_seconds=time.monotonic() - _scan_start,
+        last_check_ts=scan_time.timestamp(),
+    )
 
     # Update health endpoint state
     warnings_data = [

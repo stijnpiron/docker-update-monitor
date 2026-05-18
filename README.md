@@ -290,6 +290,29 @@ Then open `http://<your-host>:8080` in a browser.
 | `GET`  | `/health`      | Health check (JSON) — used by Docker HEALTHCHECK |
 | `GET`  | `/api/updates` | All updates with status as JSON array            |
 | `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted     |
+| `GET`  | `/metrics`     | Prometheus metrics (text/plain)                  |
+
+### Prometheus metrics
+
+`GET /metrics` exposes the following metrics in Prometheus text format, updated after each scan:
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `dum_containers_monitored` | Gauge | Number of containers with update-monitor labels |
+| `dum_updates_available{type}` | Gauge | Active (non-resolved) updates by type (`patch`, `minor`, `major`, `digest`) |
+| `dum_check_duration_seconds` | Gauge | Duration of the last update check in seconds |
+| `dum_check_errors_total` | Counter | Total errors encountered during checks (Docker connection failures, registry warnings) |
+| `dum_last_check_timestamp_seconds` | Gauge | Unix timestamp of the last completed check |
+| `dum_notifications_sent_total{channel}` | Counter | Total notification dispatches by channel (`webhook`, `email`) |
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: docker-update-monitor
+    static_configs:
+      - targets: ["<your-host>:8080"]
+```
 
 ### Environment variable
 
