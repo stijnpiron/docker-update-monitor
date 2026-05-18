@@ -71,7 +71,7 @@ services:
       DASHBOARD_DATETIME_FORMAT: "${DASHBOARD_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
 
     ports:
-      # Expose the web dashboard
+      # Expose the web dashboard and /metrics endpoint
       - "8080:8080"
 
     volumes:

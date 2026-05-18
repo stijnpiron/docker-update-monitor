@@ -2,6 +2,7 @@ import app.config as _config
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.notifications.webhook import notify as webhook_notify
 from app.notifications.email import notify as email_notify
+from app.metrics import notifications_sent_total
 
 
 def dispatch(
@@ -17,7 +18,9 @@ def dispatch(
     for channel in _config.NOTIFY_CHANNELS:
         if channel == "webhook":
             webhook_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
+            notifications_sent_total.labels(channel="webhook").inc()
         elif channel == "email":
             email_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
+            notifications_sent_total.labels(channel="email").inc()
         else:
             _config.log.warning(f"Unknown notification channel '{channel}' — skipping")

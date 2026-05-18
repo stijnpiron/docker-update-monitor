@@ -4,7 +4,8 @@ import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 import app.config as _config
 from app.health import update_state, _state, _state_lock, _build_response
@@ -101,6 +102,10 @@ def create_app() -> Flask:
         with _state_lock:
             last_check = _state.get("last_check")
         return jsonify({"last_check": last_check})
+
+    @application.route("/metrics")
+    def metrics():
+        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
     return application
 
