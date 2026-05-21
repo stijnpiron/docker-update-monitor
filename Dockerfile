@@ -27,7 +27,9 @@ RUN set -ex; \
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 RUN set -ex; \
     TARGET="$(cat /TARGET)"; \
-    mkdir -p src && echo 'fn main(){}' > src/main.rs; \
+    mkdir -p src \
+    && echo 'fn main(){}' > src/main.rs \
+    && echo '' > src/lib.rs; \
     cargo build --release --target "${TARGET}"; \
     rm -rf src target/*/release/.fingerprint/docker-update-monitor-*
 
