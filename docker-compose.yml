@@ -89,17 +89,6 @@ services:
       # Persistent state database
       - ./data:/app/data
 
-    # On Linux: the docker socket is root:docker srw-rw----, so group_add with
-    # the docker GID lets the nonroot user connect. Set DOCKER_GID to match
-    # your host's docker group (run: stat -c %g /var/run/docker.sock).
-    #
-    # On macOS (Docker Desktop): the socket is owned by your user with no write
-    # for others, so nonroot can't connect. Set USER_OVERRIDE=root to work
-    # around this (safe for local dev; root still can't escape the container).
-    user: "${USER_OVERRIDE:-}"
-    group_add:
-      - "${DOCKER_GID:-999}"
-
     healthcheck:
       test: ["CMD", "/app/monitor", "--health-check"]
       interval: 30s
