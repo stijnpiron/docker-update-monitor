@@ -1,6 +1,10 @@
-name: Tests
+name: Rust
 
 on:
+  push:
+    branches:
+      - main
+      - dev
   pull_request:
     branches:
       - main
@@ -10,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -32,5 +36,5 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-      - name: Run tests
+      - name: Test
         run: cargo test

@@ -319,7 +319,7 @@ scrape_configs:
 | Variable                    | Default          | Description                                         |
 | --------------------------- | ---------------- | --------------------------------------------------- |
 | `WEB_PORT`                  | `8080`           | Port for the web dashboard                          |
-| `DASHBOARD_DATETIME_FORMAT` | `%d/%m/%Y %H:%M` | Python `strftime` format for dates on the dashboard |
+| `DASHBOARD_DATETIME_FORMAT` | `%d/%m/%Y %H:%M` | `strftime` format for dates on the dashboard |
 
 ---
 
@@ -337,36 +337,38 @@ scrape_configs:
 
 ### Prerequisites
 
-- Python 3.13+
+- [Rust stable toolchain](https://rustup.rs/) (pinned via `rust-toolchain.toml`)
 - Docker (only for running the monitor itself, not needed for tests)
 
 ### Setup
 
 ```bash
-# Clone the repo
 git clone https://github.com/stijnpiron/docker-update-monitor.git
 cd docker-update-monitor
-
-# Create a virtual environment and install all dependencies (app + dev/test)
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
 ```
 
-`requirements-dev.txt` includes the runtime dependencies from `requirements.txt`
-plus test tooling (`pytest`, `pytest-cov`). The Docker image only installs
-`requirements.txt` to keep the production image lean.
+The `rust-toolchain.toml` at the repo root pins the Rust channel — `rustup` will
+install it automatically on first use.
 
 ### Running tests
 
 ```bash
-# Run all tests with verbose output
-.venv/bin/python -m pytest tests/ -v
+# Run all tests
+cargo test
 
-# Run with coverage report
-.venv/bin/python -m pytest tests/ --cov
+# Run with coverage (requires cargo-tarpaulin)
+cargo install cargo-tarpaulin
+cargo tarpaulin
 ```
 
 All tests run without a Docker daemon — Docker calls are mocked.
+
+### Linting & formatting
+
+```bash
+cargo fmt --check
+cargo clippy -- -D warnings
+```
 
 ### Running the monitor locally
 
@@ -375,28 +377,43 @@ All tests run without a Docker daemon — Docker calls are mocked.
 export DRY_RUN=true
 export RUN_ON_STARTUP=true
 
-.venv/bin/python monitor.py
+cargo run
 ```
 
 ### Project structure
 
 ```
-monitor.py              # Main application
-requirements.txt        # Runtime dependencies (used in Docker image)
-requirements-dev.txt    # Dev/test dependencies (includes requirements.txt)
-pyproject.toml          # pytest & coverage configuration
-Dockerfile              # Production container
+Cargo.toml              # Rust project manifest
+rust-toolchain.toml     # Pinned Rust toolchain
+Dockerfile              # Multi-arch production container (musl static binary)
 docker-compose.yml      # Docker Compose deployment
-tests/
-├── conftest.py         # Shared fixtures
-├── test_parse_tag.py   # parse_tag() unit tests
-├── test_find_updates.py        # find_updates() logic
-├── test_detect_registry.py     # detect_registry() table tests
-├── test_image_parsing.py       # Image ref → name + tag splitting
-├── test_notifications.py       # notify() behavior
-├── test_webhook_auth.py        # Auth header tests
-├── test_http_session.py        # HTTP session/retry config
-├── test_regex_validation.py    # Invalid regex handling
-├── test_graceful_shutdown.py   # SIGTERM/SIGINT handling
-└── test_run_on_startup.py      # RUN_ON_STARTUP behavior
+src/
+├── main.rs             # Entry point: Tokio runtime, cron loop, signal handling
+├── config.rs           # All env vars as a Config struct (envy)
+├── scanner.rs          # Core scan logic: Docker label parsing, mode detection
+├── state.rs            # SQLite persistence (rusqlite)
+├── migrations.rs       # DB schema migrations
+├── scheduler.rs        # Cron scheduling loop
+├── server.rs           # Axum HTTP server + Tera dashboard
+├── health.rs           # In-memory health state (shared across tasks)
+├── metrics.rs          # Prometheus metrics (lazy_static counters/gauges)
+├── version.rs          # parse_tag() and find_updates() — semver comparison
+├── cooldown.rs         # parse_cooldown() — human-readable duration parsing
+├── http.rs             # HTTP client (reqwest + tower retry)
+├── models.rs           # Core structs: UpdateInfo, ScanWarning, etc.
+├── notifications/
+│   ├── mod.rs          # dispatch() — routes to webhook and/or email
+│   ├── webhook.rs      # HTTP POST notifications
+│   └── email.rs        # SMTP notifications (lettre)
+└── registry/
+    ├── mod.rs          # detect_registry() + fetch_all_tags()
+    ├── dockerhub.rs    # Docker Hub tag listing (paginated, auth)
+    ├── ghcr.rs         # GitHub Container Registry tag listing
+    └── manifest.rs     # Multi-arch manifest + digest extraction
+templates/
+└── index.html          # Tera template for the web dashboard
+static/
+├── css/dashboard.css
+└── js/dashboard.js
+tests/                  # Integration test suite (141 tests)
 ```

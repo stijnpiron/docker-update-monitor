@@ -1,9 +1,4 @@
 .env
-__pycache__/
-*.pyc
-.pytest_cache/
-.venv/
-.coverage
 .DS_Store
 .github/skills
 docker-compose.debug.yml
@@ -12,3 +7,7 @@ data-debug/
 CLAUDE.md
 .claude/
 memory/
+data/
+
+# Rust
+target/

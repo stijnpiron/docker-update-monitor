@@ -1,0 +1,69 @@
+[package]
+name = "docker-update-monitor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.5", features = ["retry", "timeout", "util"] }
+tower-http = { version = "0.5", features = ["trace", "fs"] }
+
+# Docker socket
+bollard = "0.17"
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Templating (dashboard HTML)
+tera = "1"
+
+# Prometheus metrics
+prometheus = { version = "0.13", features = ["process"] }
+
+# Email
+lettre = { version = "0.11", features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"], default-features = false }
+
+# Cron scheduling
+cron = "0.12"
+
+# Regex
+regex = "1"
+
+# Environment / config
+envy = "0.4"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Error handling
+anyhow = "1"
+
+# Lazy static initialization (for Prometheus metrics)
+lazy_static = "1"
+
+[dev-dependencies]
+http-body-util = "0.1"
+mockall = "0.13"
+rstest = "0.23"
+tokio-test = "0.4"
+wiremock = "0.6"
+tempfile = "3"

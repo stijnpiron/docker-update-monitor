@@ -1,92 +1,108 @@
 name: docker-update-monitor
+
+# Shared environment variables — referenced by the service below.
+x-common-env: &common-env
+  # Notification channels: comma-separated list of "webhook", "email"
+  NOTIFY_CHANNELS: "${NOTIFY_CHANNELS:-webhook}"
+
+  # --- Webhook channel ---
+  NOTIFY_ENDPOINT: "${NOTIFY_ENDPOINT}"
+
+  # Docker Hub credentials (strongly recommended to avoid anonymous rate limits).
+  # Preferred: use a Personal Access Token (PAT) as the password.
+  # Generate one at: https://app.docker.com/settings/personal-access-tokens
+  DOCKERHUB_USERNAME: "${DOCKERHUB_USERNAME}"
+  DOCKERHUB_PASSWORD: "${DOCKERHUB_PASSWORD}"
+
+  # GitHub PAT with read:packages scope — required for ghcr.io images.
+  # Generate one at: https://github.com/settings/tokens
+  GITHUB_TOKEN: "${GITHUB_TOKEN}"
+
+  # --- Email channel (SMTP) ---
+  SMTP_HOST: "${SMTP_HOST}"
+  SMTP_PORT: "${SMTP_PORT}"
+  SMTP_USERNAME: "${SMTP_USERNAME}"
+  SMTP_PASSWORD: "${SMTP_PASSWORD}"
+  SMTP_FROM: "${SMTP_FROM}"
+  SMTP_TO: "${SMTP_TO}"
+  SMTP_TLS: "${SMTP_TLS:-true}"
+
+  # Cron schedule for checks (default: every hour on the hour)
+  # Standard 5-field cron: minute hour day month weekday
+  # Examples:
+  #   "0 * * * *"    — every hour
+  #   "0 */6 * * *"  — every 6 hours
+  #   "0 8 * * *"    — daily at 08:00
+  #   "0 3 * * 7"    — every Sunday at 03:00
+  CRON_SCHEDULE: "${CRON_SCHEDULE:-0 3 * * 7}"
+
+  # Set to "true" to log updates without POSTing — useful for testing
+  DRY_RUN: "false"
+
+  # Cooldown period before notifying about a newly detected update.
+  # Accepted formats: "0" (no cooldown, default), "12h", "3d", "2w", "1m".
+  # Can be overridden per container with the docker-update-monitor.update-cooldown label.
+  # UPDATE_COOLDOWN: "0"
+
+  # Label namespace (default: docker-update-monitor)
+  # LABEL_PREFIX: "docker-update-monitor"
+  # Containers are monitored when they carry at least one of these labels:
+  #   docker-update-monitor.tag-regex  — semver detection (and implicit digest fallback
+  #                                      when the current tag does not match the regex)
+  #   docker-update-monitor.mode=digest — explicit digest mode: compares the running
+  #                                       image's RepoDigests against the registry on
+  #                                       every scan; works from the first scan without
+  #                                       a silent warm-up. Can be combined with
+  #                                       tag-regex to resolve the new digest to a
+  #                                       versioned tag.
+
+  # Log verbosity: DEBUG | INFO | WARNING | ERROR
+  LOG_LEVEL: "INFO"
+
+  # Dashboard datetime display format
+  # Examples: "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%b %d, %Y %I:%M %p"
+  DASHBOARD_DATETIME_FORMAT: "${DASHBOARD_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
+
+  # IANA timezone for dashboard display (e.g. "Europe/Brussels", "America/New_York")
+  TZ: "${TZ:-}"
+
 services:
   docker-update-monitor:
-    image: ghcr.io/stijnpiron/docker-update-monitor:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: docker-update-monitor
     restart: unless-stopped
 
     environment:
-      # Notification channels: comma-separated list of "webhook", "email"
-      # Default: webhook (backward compatible)
-      NOTIFY_CHANNELS: "${NOTIFY_CHANNELS:-webhook}"
-
-      # --- Webhook channel ---
-      # Required (if using webhook): where to POST update payloads
-      NOTIFY_ENDPOINT: "${NOTIFY_ENDPOINT}"
-
-      # Docker Hub credentials (strongly recommended to avoid anonymous rate limits).
-      # Preferred: use a Personal Access Token (PAT) as the password.
-      # Generate one at: https://app.docker.com/settings/personal-access-tokens
-      DOCKERHUB_USERNAME: "${DOCKERHUB_USERNAME}"
-      DOCKERHUB_PASSWORD: "${DOCKERHUB_PASSWORD}" # password or PAT
-
-      # GitHub PAT with read:packages scope — required for ghcr.io images.
-      # Generate one at: https://github.com/settings/tokens
-      GITHUB_TOKEN: "${GITHUB_TOKEN}"
-
-      # --- Email channel (SMTP) ---
-      # Required (if using email): SMTP_HOST, SMTP_FROM, SMTP_TO
-      SMTP_HOST: "${SMTP_HOST}"
-      SMTP_PORT: "${SMTP_PORT}"
-      SMTP_USERNAME: "${SMTP_USERNAME}"
-      SMTP_PASSWORD: "${SMTP_PASSWORD}"
-      SMTP_FROM: "${SMTP_FROM}"
-      SMTP_TO: "${SMTP_TO}"
-      SMTP_TLS: "${SMTP_TLS:-true}"
-
-      # Cron schedule for checks (default: every hour on the hour)
-      # Standard 5-field cron: minute hour day month weekday
-      # Examples:
-      #   "0 * * * *"    — every hour
-      #   "0 */6 * * *"  — every 6 hours
-      #   "0 8 * * *"    — daily at 08:00
-      #   "0 3 * * 7"    — every Sunday at 03:00
-      CRON_SCHEDULE: "${CRON_SCHEDULE:-0 3 * * 7}"
-
-      # Set to "true" to log updates without POSTing — useful for testing
-      DRY_RUN: "false"
-
-      # Cooldown period before notifying about a newly detected update.
-      # Accepted formats: "0" (no cooldown, default), "12h", "3d", "2w", "1m".
-      # Can be overridden per container with the docker-update-monitor.update-cooldown label.
-      # UPDATE_COOLDOWN: "0"
-
-      # Label namespace (default: docker-update-monitor)
-      # LABEL_PREFIX: "docker-update-monitor"
-      # Containers are monitored when they carry at least one of these labels:
-      #   docker-update-monitor.tag-regex  — semver detection (and implicit digest fallback
-      #                                      when the current tag does not match the regex)
-      #   docker-update-monitor.mode=digest — explicit digest mode: compares the running
-      #                                       image's RepoDigests against the registry on
-      #                                       every scan; works from the first scan without
-      #                                       a silent warm-up. Can be combined with
-      #                                       tag-regex to resolve the new digest to a
-      #                                       versioned tag.
-
-      # Log verbosity: DEBUG | INFO | WARNING | ERROR
-      LOG_LEVEL: "INFO"
-
-      # Dashboard datetime display format (Python strftime)
-      # Examples: "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%b %d, %Y %I:%M %p"
-      DASHBOARD_DATETIME_FORMAT: "${DASHBOARD_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
+      <<: *common-env
 
     ports:
-      # Expose the web dashboard and /metrics endpoint
+      # Dashboard (GET /), /health, /metrics, /api/*
       - "8080:8080"
 
     volumes:
-      # Read-only access to the Docker socket
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # On macOS, /var/run/docker.sock is a symlink that doesn't resolve inside
+      # the container. Set DOCKER_SOCKET to the real path:
+      #   export DOCKER_SOCKET=$(readlink -f /var/run/docker.sock)
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       # Persistent state database
       - ./data:/app/data
 
-    # Needed so 'nobody' user can access the Docker socket
+    # On Linux: the docker socket is root:docker srw-rw----, so group_add with
+    # the docker GID lets the nonroot user connect. Set DOCKER_GID to match
+    # your host's docker group (run: stat -c %g /var/run/docker.sock).
+    #
+    # On macOS (Docker Desktop): the socket is owned by your user with no write
+    # for others, so nonroot can't connect. Set USER_OVERRIDE=root to work
+    # around this (safe for local dev; root still can't escape the container).
+    user: "${USER_OVERRIDE:-}"
     group_add:
       - "${DOCKER_GID:-999}"
 
     healthcheck:
-      test: ["CMD", "python", "-m", "app.healthcheck"]
+      test: ["CMD", "/app/monitor", "--health-check"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s

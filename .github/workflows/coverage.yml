@@ -13,30 +13,42 @@ permissions:
 jobs:
   coverage:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
         with:
-          python-version: "3.14"
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-tarpaulin-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-tarpaulin-
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
 
       - name: Run tests with coverage
         id: coverage
         run: |
-          python -m pytest tests/ --cov --cov-report=term --cov-report=json --cov-fail-under=0 > coverage-output.txt 2>&1 || true
-          TOTAL=$(python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
+          cargo tarpaulin --out Json --output-dir . --skip-clean 2>&1 | tee tarpaulin-output.txt || true
+          if [ -f tarpaulin-report.json ]; then
+            TOTAL=$(python3 -c "import json; d=json.load(open('tarpaulin-report.json')); print(round(d['coverage'], 1))")
+          else
+            TOTAL="0"
+          fi
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
-          # Extract only the coverage summary table
-          sed -n '/^Name.*Stmts/,/^====/p' coverage-output.txt | head -n -1 | grep -v "^Coverage JSON" > coverage-summary.txt
 
       - name: Generate coverage report comment
         id: report
         run: |
           TOTAL="${{ steps.coverage.outputs.total }}"
-          if [ "${TOTAL%.*}" -ge 80 ]; then
+          INT_TOTAL="${TOTAL%.*}"
+          if [ "${INT_TOTAL}" -ge 80 ]; then
             STATUS="✅ **Pass** — coverage is at ${TOTAL}% (threshold: 80%)"
           else
             STATUS="❌ **Fail** — coverage is at ${TOTAL}% (threshold: 80%)"
@@ -49,7 +61,7 @@ jobs:
             echo "${STATUS}"
             echo ""
             echo '```'
-            cat coverage-summary.txt
+            tail -20 tarpaulin-output.txt || true
             echo '```'
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
@@ -63,7 +75,8 @@ jobs:
       - name: Enforce 80% threshold
         run: |
           TOTAL="${{ steps.coverage.outputs.total }}"
-          if [ "${TOTAL%.*}" -lt 80 ]; then
+          INT_TOTAL="${TOTAL%.*}"
+          if [ "${INT_TOTAL}" -lt 80 ]; then
             echo "::error::Coverage ${TOTAL}% is below the 80% threshold"
             exit 1
           fi
