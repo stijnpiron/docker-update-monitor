@@ -269,9 +269,13 @@ pub async fn run_check(
     tracing::info!("{}", "=".repeat(60));
 
     let containers = match docker.list_containers().await {
-        Ok(c) => c,
+        Ok(c) => {
+            health.set_docker_ok(true);
+            c
+        }
         Err(e) => {
             tracing::error!("Cannot connect to Docker: {}", e);
+            health.set_docker_ok(false);
             metrics::CHECK_ERRORS.inc();
             return Ok(());
         }

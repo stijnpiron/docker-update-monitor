@@ -125,6 +125,24 @@ async fn test_health_ok_after_scan() {
 }
 
 #[tokio::test]
+async fn test_health_docker_error_returns_503() {
+    let f = NamedTempFile::new().unwrap();
+    let conn = open_db(f.path()).unwrap();
+    let health = HealthState::new();
+    health.set_docker_ok(false);
+    let (app, _rx) = make_app(conn, health);
+
+    let resp = app
+        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await[..]).unwrap();
+    assert_eq!(body["status"], "error");
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
 async fn test_api_updates_empty() {
     let f = NamedTempFile::new().unwrap();
     let conn = open_db(f.path()).unwrap();

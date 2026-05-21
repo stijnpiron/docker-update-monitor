@@ -16,6 +16,8 @@ struct HealthStateInner {
     warnings: Vec<ScanWarning>,
     skipped_containers: Vec<SkippedContainer>,
     started_at: DateTime<Utc>,
+    // None = no scan attempted yet; Some(true) = last attempt OK; Some(false) = last attempt failed
+    docker_ok: Option<bool>,
 }
 
 impl HealthState {
@@ -28,6 +30,7 @@ impl HealthState {
                 warnings: Vec::new(),
                 skipped_containers: Vec::new(),
                 started_at: Utc::now(),
+                docker_ok: None,
             })),
         }
     }
@@ -58,6 +61,16 @@ impl HealthState {
         }
     }
 
+    pub fn set_docker_ok(&self, ok: bool) {
+        self.inner.write().unwrap().docker_ok = Some(ok);
+    }
+
+    pub fn is_docker_healthy(&self) -> bool {
+        // Treat "not yet attempted" as healthy so the container doesn't start
+        // in a failed state before the first scan runs.
+        self.inner.read().unwrap().docker_ok != Some(false)
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         let state = self.inner.read().unwrap();
         let uptime = (Utc::now() - state.started_at).num_seconds().max(0) as u64;
@@ -68,6 +81,17 @@ impl HealthState {
         let next_check_str = state
             .next_check
             .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+
+        if state.docker_ok == Some(false) {
+            return serde_json::json!({
+                "status": "error",
+                "error": "Cannot connect to Docker daemon",
+                "last_check": last_check_str,
+                "next_check": next_check_str,
+                "containers_monitored": state.containers_monitored,
+                "uptime_seconds": uptime,
+            });
+        }
 
         if state.last_check.is_none() {
             serde_json::json!({
@@ -134,5 +158,33 @@ mod tests {
         assert_eq!(j["next_check"], "2026-05-05T03:00:00Z");
         assert_eq!(j["containers_monitored"], 12);
         assert!(j["uptime_seconds"].as_u64().is_some());
+    }
+
+    #[test]
+    fn test_initial_state_is_docker_healthy() {
+        let hs = HealthState::new();
+        assert!(hs.is_docker_healthy(), "no scan yet should be considered healthy");
+    }
+
+    #[test]
+    fn test_docker_error_state() {
+        let hs = HealthState::new();
+        hs.set_docker_ok(false);
+        assert!(!hs.is_docker_healthy());
+        let j = hs.to_json();
+        assert_eq!(j["status"], "error");
+        assert!(j["error"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_docker_ok_after_error_recovers() {
+        let hs = HealthState::new();
+        hs.set_docker_ok(false);
+        assert!(!hs.is_docker_healthy());
+        hs.set_docker_ok(true);
+        assert!(hs.is_docker_healthy());
+        // With no last_check set yet, status falls back to "starting"
+        let j = hs.to_json();
+        assert_eq!(j["status"], "starting");
     }
 }

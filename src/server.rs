@@ -174,8 +174,13 @@ async fn dashboard_handler(State(s): State<RouterState>) -> impl IntoResponse {
 }
 
 async fn health_handler(State(s): State<RouterState>) -> impl IntoResponse {
-    let json = s.app.health.to_json();
-    (StatusCode::OK, Json(json))
+    let health = &s.app.health;
+    let status = if health.is_docker_healthy() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(health.to_json()))
 }
 
 async fn metrics_handler() -> impl IntoResponse {
