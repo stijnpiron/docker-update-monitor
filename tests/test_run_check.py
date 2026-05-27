@@ -38,6 +38,32 @@ class TestRunCheckDockerConnection:
 
         assert "Cannot connect to Docker" in caplog.text
 
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_client_closed_after_successful_run(self, mock_docker, mock_token):
+        """Docker client must be closed after a successful run_check() invocation."""
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = []
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        mock_client.close.assert_called_once()
+
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_client_closed_even_when_scan_raises(self, mock_docker, mock_token):
+        """Docker client must be closed even when an unexpected exception occurs mid-scan."""
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.side_effect = RuntimeError("unexpected failure")
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), pytest.raises(RuntimeError):
+            run_check()
+
+        mock_client.close.assert_called_once()
+
 
 class TestRunCheckContainerProcessing:
     """Container processing edge cases in run_check()."""
