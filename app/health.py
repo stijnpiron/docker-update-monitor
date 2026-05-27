@@ -43,6 +43,8 @@ def _build_response() -> tuple[int, dict]:
         last_check = _state["last_check"]
         next_check = _state["next_check"]
         containers_monitored = _state["containers_monitored"]
+        # warnings and skipped_containers are intentionally excluded from the
+        # health endpoint to keep it lightweight. The dashboard serves the full state.
 
     body = {
         "status": "ok",
