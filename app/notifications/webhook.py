@@ -1,6 +1,8 @@
 import json
 from dataclasses import asdict
 
+import requests
+
 import app.config as _config
 import app.http as _http
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
@@ -63,5 +65,5 @@ def notify(
         )
         resp.raise_for_status()
         _config.log.info(f"Notified endpoint with {len(updates)} update(s)  →  HTTP {resp.status_code}")
-    except Exception as exc:
+    except requests.RequestException as exc:
         _config.log.error(f"Failed to notify endpoint: {exc}")

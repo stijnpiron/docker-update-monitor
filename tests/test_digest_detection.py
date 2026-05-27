@@ -862,3 +862,104 @@ class TestFetchPlatformDigest:
             )
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Platform digest exception handling — narrowed from broad Exception
+# ---------------------------------------------------------------------------
+
+class TestPlatformDigestExceptionHandling:
+    """Verify that only specific exceptions are caught in the platform digest block."""
+
+    def _setup_digest_mismatch(self, mock_docker, local_digest="sha256:aabbcc", remote_digest="sha256:ddeeff"):
+        """Configure a mock docker client where local != remote digest, triggering platform check."""
+        container = MagicMock()
+        container.name = "myapp"
+        container.labels = {"docker-update-monitor.mode": "digest"}
+        container.image.tags = ["nginx:latest"]
+        container.attrs = {"Config": {"Image": "nginx:latest"}}
+        container.image.attrs = {
+            "RepoDigests": [f"nginx@{local_digest}"],
+            "Os": "linux",
+            "Architecture": "amd64",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+        return container, local_digest, remote_digest
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_requests_exception_is_caught(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """requests.RequestException during platform digest check is caught and logged."""
+        import requests
+
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = requests.ConnectionError("network down")
+
+        with patch("app.scanner.notify") as mock_notify, \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            run_check()
+
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_key_error_is_caught(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """KeyError during platform digest check is caught and logged."""
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = KeyError("missing_key")
+
+        with patch("app.scanner.notify") as mock_notify, \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            run_check()
+
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_docker_api_error_is_caught(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """docker.errors.APIError during platform digest check is caught and logged."""
+        import docker as docker_mod
+
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = docker_mod.errors.APIError("docker error")
+
+        with patch("app.scanner.notify") as mock_notify, \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            run_check()
+
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_programming_error_propagates(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """Programming errors (e.g. AttributeError) must not be swallowed."""
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = AttributeError("bad attribute")
+
+        with patch("app.scanner.notify"), \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            with pytest.raises(AttributeError, match="bad attribute"):
+                run_check()
