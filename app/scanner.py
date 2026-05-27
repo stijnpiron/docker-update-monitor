@@ -20,6 +20,21 @@ from app.health import update_state
 from app.metrics import check_errors_total, update_after_scan
 
 
+def _is_higher_version(candidate: str | None, current: str | None) -> bool:
+    """Return True if candidate > current using semver-aware (integer) comparison.
+
+    Splits both strings by '.' and compares segment-by-segment as integers.
+    Falls back to plain string comparison when any segment is non-numeric
+    (e.g. digest hashes), where string ordering is an acceptable approximation.
+    """
+    c = candidate or ""
+    b = current or ""
+    try:
+        return tuple(int(p) for p in c.split(".")) > tuple(int(p) for p in b.split("."))
+    except ValueError:
+        return c > b
+
+
 def _extract_local_digest(repo_digests: list[str]) -> str | None:
     """Extract the first sha256 digest from a Docker RepoDigests list.
 
@@ -454,7 +469,7 @@ def run_check() -> None:
     _deduped: dict[tuple[str, str, str], UpdateInfo] = {}
     for _u in categorized:
         _key = (_u.container_name, _u.image, _u.update_type)
-        if _key not in _deduped or (_u.new_version or "") > (_deduped[_key].new_version or ""):
+        if _key not in _deduped or _is_higher_version(_u.new_version, _deduped[_key].new_version):
             _deduped[_key] = _u
     categorized = list(_deduped.values())
 

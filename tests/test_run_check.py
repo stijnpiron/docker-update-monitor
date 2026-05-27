@@ -7,7 +7,7 @@ import pytest
 from app import config as config_mod
 from app import main as main_mod
 from app.models import UpdateInfo
-from app.scanner import run_check
+from app.scanner import run_check, _is_higher_version
 
 
 def _make_container(name, image_tag, labels, has_image_tags=True):
@@ -558,6 +558,39 @@ class TestRunCheckCooldown:
         assert notified_updates[0].status == "resolved"
 
 
+class TestIsHigherVersion:
+    """Unit tests for the _is_higher_version() semver comparison helper."""
+
+    def test_higher_major_wins(self):
+        assert _is_higher_version("10.0.0", "9.0.0") is True
+
+    def test_lower_major_loses(self):
+        assert _is_higher_version("9.0.0", "10.0.0") is False
+
+    def test_equal_versions_not_higher(self):
+        assert _is_higher_version("1.2.3", "1.2.3") is False
+
+    def test_higher_minor_wins(self):
+        assert _is_higher_version("1.10.0", "1.9.0") is True
+
+    def test_higher_patch_wins(self):
+        assert _is_higher_version("1.0.10", "1.0.9") is True
+
+    def test_none_candidate_is_not_higher(self):
+        assert _is_higher_version(None, "1.0.0") is False
+
+    def test_none_current_makes_any_candidate_higher(self):
+        assert _is_higher_version("1.0.0", None) is True
+
+    def test_both_none_not_higher(self):
+        assert _is_higher_version(None, None) is False
+
+    def test_digest_fallback_uses_string_comparison(self):
+        # Non-numeric segments fall back to string comparison
+        assert _is_higher_version("sha256:bbb", "sha256:aaa") is True
+        assert _is_higher_version("sha256:aaa", "sha256:bbb") is False
+
+
 class TestRunCheckDeduplication:
     """Deduplication of updates with the same (container, image, update_type) key."""
 
@@ -626,6 +659,34 @@ class TestRunCheckDeduplication:
         updates = mock_notify.call_args[0][0]
         assert len(updates) == 1
         assert updates[0].new_version == "1.2.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_semver_crossing_digit_boundary(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """9.0.0 must not beat 10.0.0 — string '9' > '10' but int 9 < 10."""
+        lower = self._make_update("app", "nginx", "major", "9.0.0")
+        higher = self._make_update("app", "nginx", "major", "10.0.0")
+        # 9.0.0 comes after 10.0.0 in the list — string comparison would pick 9.0.0 wrong
+        mock_scan.return_value = [higher, lower]
+
+        container = _make_container("app", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0].new_version == "10.0.0"
 
     @patch("app.scanner.notify")
     @patch("app.scanner.mark_notified")
