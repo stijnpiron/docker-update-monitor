@@ -115,13 +115,14 @@ class TestNotifySuccessfulPost:
 
 
 class TestNotifyFailedPost:
-    """Failed POST logs error but does not raise."""
+    """Failed POST logs error but does not raise for network errors."""
 
     @patch.object(http_mod, "http_session")
     def test_failed_post_logs_error(self, mock_session, caplog):
         import logging
+        import requests
 
-        mock_session.post.side_effect = Exception("Connection refused")
+        mock_session.post.side_effect = requests.ConnectionError("Connection refused")
 
         with patch.object(config_mod, "DRY_RUN", False), \
              patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
@@ -135,7 +136,9 @@ class TestNotifyFailedPost:
 
     @patch.object(http_mod, "http_session")
     def test_failed_post_does_not_raise(self, mock_session):
-        mock_session.post.side_effect = Exception("timeout")
+        import requests
+
+        mock_session.post.side_effect = requests.Timeout("timeout")
 
         with patch.object(config_mod, "DRY_RUN", False), \
              patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
@@ -143,6 +146,18 @@ class TestNotifyFailedPost:
              patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
             # Should not raise
             notify([_make_update()])
+
+    @patch.object(http_mod, "http_session")
+    def test_programming_error_propagates(self, mock_session):
+        """Non-network exceptions (programming bugs) must not be swallowed."""
+        mock_session.post.side_effect = AttributeError("bad attribute")
+
+        with patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
+            with pytest.raises(AttributeError, match="bad attribute"):
+                notify([_make_update()])
 
 
 class TestNotifyEmptyList:

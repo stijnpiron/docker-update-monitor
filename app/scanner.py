@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 _GIT_HASH_RE = re.compile(r"sha-[a-f0-9]{7,}")
 
 import docker
-from docker.errors import DockerException
+import requests
+from docker.errors import APIError as DockerAPIError, DockerException
 
 import app.config as _config
 from app.cooldown import parse_cooldown
@@ -274,7 +275,7 @@ def run_check() -> None:
                                     f"    Platform digest unchanged for"
                                     f" {container_os}/{container_arch} ({local_digest[:19]})"
                                 )
-                    except Exception as exc:
+                    except (DockerAPIError, KeyError, requests.RequestException) as exc:
                         _config.log.debug(f"    Could not check platform digest: {exc}")
 
                     if not platform_match:
