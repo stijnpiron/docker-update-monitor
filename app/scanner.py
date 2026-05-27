@@ -64,7 +64,7 @@ def _resolve_digest_to_tag(
     covers git-hash tags (e.g. sha-675e77e) used by GHCR and Docker Hub.
     The pattern defines what is "versioned"; everything else is treated as rolling.
     """
-    matching_tags = [t for t in all_tags if re.fullmatch(pattern, t)]
+    matching_tags = [t for t in all_tags if t != current_tag and re.fullmatch(pattern, t)]
     for tag in matching_tags:
         tag_digest = fetch_digest(
             image_name, tag,
