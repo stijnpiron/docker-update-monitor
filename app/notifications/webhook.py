@@ -1,3 +1,4 @@
+import base64
 import json
 from dataclasses import asdict
 
@@ -52,7 +53,8 @@ def notify(
     if _config.NOTIFY_AUTH_TYPE == "bearer" and _config.NOTIFY_AUTH_TOKEN:
         headers["Authorization"] = f"Bearer {_config.NOTIFY_AUTH_TOKEN}"
     elif _config.NOTIFY_AUTH_TYPE == "basic" and _config.NOTIFY_AUTH_TOKEN:
-        headers["Authorization"] = f"Basic {_config.NOTIFY_AUTH_TOKEN}"
+        encoded = base64.b64encode(_config.NOTIFY_AUTH_TOKEN.encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {encoded}"
     elif _config.NOTIFY_AUTH_TYPE and _config.NOTIFY_AUTH_TYPE not in ("bearer", "basic"):
         _config.log.warning(f"Unknown NOTIFY_AUTH_TYPE '{_config.NOTIFY_AUTH_TYPE}' — sending without authentication")
 
