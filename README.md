@@ -204,7 +204,7 @@ could be matched to the new digest) or the raw registry digest (`sha256:…`).
 | ------------------- | --------- | ------------------------------------------------ |
 | `NOTIFY_ENDPOINT`   | _(empty)_ | Webhook URL to POST updates to                   |
 | `NOTIFY_AUTH_TYPE`  | _(empty)_ | Auth type: `bearer`, `basic`, or empty (no auth) |
-| `NOTIFY_AUTH_TOKEN` | _(empty)_ | Token/credentials for the `Authorization` header |
+| `NOTIFY_AUTH_TOKEN` | _(empty)_ | Credentials for the `Authorization` header. For `bearer`, the raw token. For `basic`, `user:pass` (base64-encoded automatically). |
 
 ### Email channel (SMTP)
 
