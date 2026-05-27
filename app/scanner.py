@@ -451,14 +451,12 @@ def run_check() -> None:
     # Deduplicate: keep only the highest new_version per (container, image, update_type).
     # The DB unique constraint already prevents exact duplicates; this guards against
     # any edge case where the same container+image+type appears with different new_versions.
-    _seen: dict[tuple[str, str, str], str] = {}
-    _deduped: list[UpdateInfo] = []
+    _deduped: dict[tuple[str, str, str], UpdateInfo] = {}
     for _u in categorized:
         _key = (_u.container_name, _u.image, _u.update_type)
-        if _key not in _seen or (_u.new_version or "") > _seen[_key]:
-            _seen[_key] = _u.new_version or ""
-            _deduped.append(_u)
-    categorized = _deduped
+        if _key not in _deduped or (_u.new_version or "") > (_deduped[_key].new_version or ""):
+            _deduped[_key] = _u
+    categorized = list(_deduped.values())
 
     new_count = sum(1 for u in categorized if u.status == "new")
     known_count = sum(1 for u in categorized if u.status == "known")

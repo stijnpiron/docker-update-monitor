@@ -558,6 +558,102 @@ class TestRunCheckCooldown:
         assert notified_updates[0].status == "resolved"
 
 
+class TestRunCheckDeduplication:
+    """Deduplication of updates with the same (container, image, update_type) key."""
+
+    def _make_update(self, container_name, image, update_type, new_version, current_version="1.0.0"):
+        return UpdateInfo(
+            container_name=container_name,
+            service_name=container_name,
+            stack="stack",
+            image=image,
+            current_version=current_version,
+            new_version=new_version,
+            update_type=update_type,
+            status="new",
+        )
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_duplicate_key_keeps_highest_version(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Two entries with the same key but different new_version → only highest is kept."""
+        lower = self._make_update("app", "nginx", "minor", "1.1.0")
+        higher = self._make_update("app", "nginx", "minor", "1.2.0")
+        mock_scan.return_value = [lower, higher]
+
+        container = _make_container("app", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0].new_version == "1.2.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_duplicate_key_order_independent(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Highest version wins regardless of iteration order (higher entry first)."""
+        higher = self._make_update("app", "nginx", "minor", "1.2.0")
+        lower = self._make_update("app", "nginx", "minor", "1.1.0")
+        mock_scan.return_value = [higher, lower]
+
+        container = _make_container("app", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0].new_version == "1.2.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_different_keys_both_kept(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Entries with different keys are all kept."""
+        u1 = self._make_update("app1", "nginx", "minor", "1.1.0")
+        u2 = self._make_update("app2", "redis", "major", "2.0.0")
+        mock_scan.return_value = [u1, u2]
+
+        container = _make_container("app1", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 2
+
+
 class TestMainEdgeCases:
     """Edge cases in main()."""
 
