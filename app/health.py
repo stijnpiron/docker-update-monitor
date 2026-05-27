@@ -23,11 +23,12 @@ def update_state(*, last_check: datetime | None = None, next_check: datetime | N
                  containers_monitored: int | None = None,
                  warnings: list[dict] | None = None,
                  skipped_containers: list[dict] | None = None) -> None:
+    iso_to_persist: str | None = None
     with _state_lock:
         if last_check is not None:
             iso = last_check.isoformat().replace("+00:00", "Z")
             _state["last_check"] = iso
-            save_last_check(iso)
+            iso_to_persist = iso
         if next_check is not None:
             _state["next_check"] = next_check.isoformat().replace("+00:00", "Z")
         if containers_monitored is not None:
@@ -36,6 +37,8 @@ def update_state(*, last_check: datetime | None = None, next_check: datetime | N
             _state["warnings"] = list(warnings)
         if skipped_containers is not None:
             _state["skipped_containers"] = list(skipped_containers)
+    if iso_to_persist is not None:
+        save_last_check(iso_to_persist)
 
 
 def _build_response() -> tuple[int, dict]:
