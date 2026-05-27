@@ -85,6 +85,27 @@ class TestHealthResponse:
         with health._state_lock:
             assert health._state["skipped_containers"] == skipped
 
+    def test_update_state_releases_lock_before_save_last_check(self):
+        """save_last_check must be called outside _state_lock so DB I/O does not stall readers."""
+        lock_held_during_save: list[bool] = []
+
+        def fake_save(iso):
+            lock_held_during_save.append(health._state_lock.locked())
+
+        now = datetime(2026, 4, 28, 3, 0, 0, tzinfo=timezone.utc)
+        with patch("app.health.save_last_check", side_effect=fake_save):
+            health.update_state(last_check=now)
+
+        assert lock_held_during_save == [False], (
+            "save_last_check must be called with _state_lock released"
+        )
+
+    def test_update_state_does_not_persist_when_last_check_absent(self):
+        """save_last_check is only invoked when last_check is provided."""
+        with patch("app.health.save_last_check") as mock_save:
+            health.update_state(containers_monitored=3)
+        mock_save.assert_not_called()
+
 
 class TestHealthEndpoint:
     """Integration tests hitting the actual HTTP server."""
