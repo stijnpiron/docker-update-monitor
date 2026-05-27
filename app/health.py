@@ -1,10 +1,7 @@
-import json
 import threading
 import time
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
-import app.config as _config
 from app.state import save_last_check
 
 _start_time = time.monotonic()
@@ -62,30 +59,3 @@ def _build_response() -> tuple[int, dict]:
         body["note"] = "waiting for first scan to complete"
 
     return 200, body
-
-
-class _HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
-            status_code, body = _build_response()
-            payload = json.dumps(body).encode()
-            self.send_response(status_code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        pass  # suppress access logs
-
-
-def start_health_server() -> threading.Thread:
-    server = HTTPServer(("0.0.0.0", _config.WEB_PORT), _HealthHandler)
-    server.allow_reuse_address = True
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    _config.log.info(f"Health endpoint listening on port {_config.WEB_PORT}")
-    return thread
