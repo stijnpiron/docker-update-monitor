@@ -287,7 +287,7 @@ Then open `http://<your-host>:8080` in a browser.
 | Method | Path           | Description                                      |
 | ------ | -------------- | ------------------------------------------------ |
 | `GET`  | `/`            | Dashboard page (HTML)                            |
-| `GET`  | `/health`      | Health check (JSON) — used by Docker HEALTHCHECK |
+| `GET`  | `/health`      | Liveness check (JSON) — used by Docker HEALTHCHECK. Always `200` while the server is up; body `status` is `"starting"` until the first scan completes, then `"ok"`. |
 | `GET`  | `/api/updates` | All updates with status as JSON array            |
 | `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted     |
 | `GET`  | `/metrics`     | Prometheus metrics (text/plain)                  |
