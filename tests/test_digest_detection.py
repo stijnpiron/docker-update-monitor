@@ -166,6 +166,20 @@ class TestDigestVersionResolution:
         assert result is None
 
     @patch("app.scanner.fetch_digest")
+    def test_resolve_digest_excludes_current_tag_from_pattern_matches(self, mock_fetch_digest):
+        """Regression: pattern phase must skip current_tag, mirroring the fallback phase."""
+        mock_fetch_digest.return_value = "sha256:target"
+
+        result = _resolve_digest_to_tag(
+            "myimage",
+            "sha256:target",
+            ["1.2.3"],
+            r"^(\d+)\.(\d+)\.(\d+)$",
+            current_tag="1.2.3",
+        )
+        assert result is None
+
+    @patch("app.scanner.fetch_digest")
     def test_resolve_digest_prefers_git_hash_over_other_rolling_tags(self, mock_fetch_digest):
         def digest_side_effect(image, tag, *args, **kwargs):
             if tag in ("latest", "sha-abcdef1"):
