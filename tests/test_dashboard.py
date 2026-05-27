@@ -28,13 +28,13 @@ def _reset_scan_trigger():
     _scan_trigger.clear()
 
 
-@pytest.fixture(autouse=True)
-def _reset_health_state():
-    """Snapshot app.health._state before each test and restore it after.
+def _snapshot_and_restore_health_state():
+    """Generator: snapshot app.health._state, yield, then restore it.
 
     Why: Several tests mutate `_state` to exercise dashboard rendering. Without
     a yield-based teardown, an assertion failure leaves the global polluted for
-    every subsequent test (see issue #122).
+    every subsequent test (see issue #122). Extracted from the fixture so the
+    regression tests in TestStateCleanupOnFailure can drive it directly.
     """
     from app.health import _state, _state_lock
     with _state_lock:
@@ -45,6 +45,11 @@ def _reset_health_state():
         with _state_lock:
             _state.clear()
             _state.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _reset_health_state():
+    yield from _snapshot_and_restore_health_state()
 
 
 class TestDashboardRoute:
@@ -548,7 +553,7 @@ class TestStateCleanupOnFailure:
             _state["warnings"] = [{"sentinel": "pre-existing"}]
             _state["skipped_containers"] = []
 
-        gen = _reset_health_state.__wrapped__()
+        gen = _snapshot_and_restore_health_state()
         next(gen)
         with _state_lock:
             _state["warnings"] = [{"polluted": "during-test"}]
@@ -572,7 +577,7 @@ class TestStateCleanupOnFailure:
         with _state_lock:
             _state["warnings"] = [{"sentinel": "original"}]
 
-        gen = _reset_health_state.__wrapped__()
+        gen = _snapshot_and_restore_health_state()
         next(gen)
         with _state_lock:
             _state["warnings"] = [{"polluted": "yes"}]
