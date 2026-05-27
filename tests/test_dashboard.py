@@ -1,5 +1,6 @@
 """Unit tests for the Flask dashboard routes."""
 
+import contextlib
 import json
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
@@ -25,6 +26,25 @@ def _reset_scan_trigger():
     _scan_trigger.clear()
     yield
     _scan_trigger.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_health_state():
+    """Snapshot app.health._state before each test and restore it after.
+
+    Why: Several tests mutate `_state` to exercise dashboard rendering. Without
+    a yield-based teardown, an assertion failure leaves the global polluted for
+    every subsequent test (see issue #122).
+    """
+    from app.health import _state, _state_lock
+    with _state_lock:
+        snapshot = {k: list(v) if isinstance(v, list) else v for k, v in _state.items()}
+    try:
+        yield
+    finally:
+        with _state_lock:
+            _state.clear()
+            _state.update(snapshot)
 
 
 class TestDashboardRoute:
@@ -280,9 +300,6 @@ class TestWarningsDisplay:
         assert "Warnings" in html
         assert "broken" in html
         assert "Invalid tag-regex" in html
-        # cleanup
-        with _state_lock:
-            _state["warnings"] = []
 
     @patch("app.dashboard.get_all_updates")
     def test_no_warnings_section_when_empty(self, mock_updates, client):
@@ -313,9 +330,6 @@ class TestSkippedContainersDisplay:
         assert "redis-cache" in html
         assert "postgres-db" in html
         assert "No &#39;docker-update-monitor.tag-regex&#39; label" in html
-        # cleanup
-        with _state_lock:
-            _state["skipped_containers"] = []
 
     @patch("app.dashboard.get_all_updates")
     def test_skipped_sorted_by_stack(self, mock_updates, client):
@@ -331,9 +345,6 @@ class TestSkippedContainersDisplay:
         alpha_pos = html.index("alpha")
         zebra_pos = html.index("zebra")
         assert alpha_pos < zebra_pos
-        # cleanup
-        with _state_lock:
-            _state["skipped_containers"] = []
 
     @patch("app.dashboard.get_all_updates")
     def test_no_skipped_section_when_empty(self, mock_updates, client):
@@ -352,26 +363,20 @@ class TestApiLastScanRoute:
     def test_returns_null_before_first_scan(self, client):
         from app.health import _state, _state_lock
         with _state_lock:
-            original = _state.get("last_check")
             _state["last_check"] = None
         resp = client.get("/api/last-scan")
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data == {"last_check": None}
-        with _state_lock:
-            _state["last_check"] = original
 
     def test_returns_last_check_timestamp(self, client):
         from app.health import _state, _state_lock
         with _state_lock:
-            original = _state.get("last_check")
             _state["last_check"] = "2026-04-30T12:00:00Z"
         resp = client.get("/api/last-scan")
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data == {"last_check": "2026-04-30T12:00:00Z"}
-        with _state_lock:
-            _state["last_check"] = original
 
     def test_update_banner_in_dashboard_html(self, client):
         from unittest.mock import patch as _p
@@ -529,3 +534,51 @@ class TestPendingResolvedSplit:
         resolved_pos = html.index('id="resolved-table"')
         pending_section = html[pending_pos:resolved_pos]
         assert "resolved-one" not in pending_section
+
+
+class TestStateCleanupOnFailure:
+    """Regression tests for issue #122: _state cleanup must survive assertion failures."""
+
+    def test_state_restored_when_test_raises(self):
+        """Drive the _reset_health_state fixture manually and confirm it restores
+        _state when the wrapped test body raises."""
+        from app.health import _state, _state_lock
+
+        with _state_lock:
+            _state["warnings"] = [{"sentinel": "pre-existing"}]
+            _state["skipped_containers"] = []
+
+        gen = _reset_health_state.__wrapped__()
+        next(gen)
+        with _state_lock:
+            _state["warnings"] = [{"polluted": "during-test"}]
+            _state["skipped_containers"] = [{"polluted": "during-test"}]
+        try:
+            gen.throw(AssertionError("simulated failure"))
+        except AssertionError:
+            pass
+        with contextlib.suppress(StopIteration):
+            next(gen)
+
+        with _state_lock:
+            assert _state["warnings"] == [{"sentinel": "pre-existing"}]
+            assert _state["skipped_containers"] == []
+            _state["warnings"] = []
+
+    def test_state_restored_on_clean_exit(self):
+        """The fixture also restores state when the test body completes normally."""
+        from app.health import _state, _state_lock
+
+        with _state_lock:
+            _state["warnings"] = [{"sentinel": "original"}]
+
+        gen = _reset_health_state.__wrapped__()
+        next(gen)
+        with _state_lock:
+            _state["warnings"] = [{"polluted": "yes"}]
+        with contextlib.suppress(StopIteration):
+            next(gen)
+
+        with _state_lock:
+            assert _state["warnings"] == [{"sentinel": "original"}]
+            _state["warnings"] = []
