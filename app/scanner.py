@@ -127,7 +127,7 @@ def run_check() -> None:
         skipped_containers: list[dict] = []
         monitored_versions: dict[tuple[str, str], tuple[str, str]] = {}
         running_digests: dict[tuple[str, str], list[str]] = {}
-        container_cooldowns: dict[str, object] = {}  # container_name → timedelta
+        container_cooldowns: dict[str, timedelta] = {}
         monitored_count = 0
 
         for container in containers:
