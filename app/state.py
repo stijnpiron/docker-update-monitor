@@ -8,8 +8,6 @@ from app.migrations import run_migrations
 from app.models import UpdateInfo
 from app.version import parse_tag
 
-_DB_PATH = Path(_config.STATE_DB_PATH)
-
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS updates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,8 +45,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 
 def _connect() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB_PATH))
+    db_path = Path(_config.STATE_DB_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
     conn.execute(_DIGESTS_SCHEMA)
