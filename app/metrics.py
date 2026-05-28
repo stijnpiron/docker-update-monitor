@@ -28,9 +28,15 @@ last_check_timestamp_seconds = Gauge(
     "Unix timestamp of last completed check",
 )
 
+notifications_attempted_total = Counter(
+    "dum_notifications_attempted_total",
+    "Total notifications attempted (delivery tried) by channel",
+    ["channel"],
+)
+
 notifications_sent_total = Counter(
     "dum_notifications_sent_total",
-    "Total notifications sent by channel",
+    "Total notifications successfully delivered by channel",
     ["channel"],
 )
 

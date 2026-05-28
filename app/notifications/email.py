@@ -197,13 +197,19 @@ def notify(
     *,
     mismatches: list[RegexMismatch] | None = None,
     warnings: list[ScanWarning] | None = None,
-) -> None:
+) -> bool | None:
+    """Send email notification.
+
+    Returns True on successful delivery, False on a delivery attempt that
+    failed (e.g. SMTP error), and None when no delivery was attempted (empty
+    payload, missing SMTP configuration).
+    """
     if not updates and not mismatches and not warnings:
-        return
+        return None
 
     if not _config.SMTP_HOST or not _config.SMTP_FROM or not _config.SMTP_TO:
         _config.log.warning("SMTP not fully configured (SMTP_HOST, SMTP_FROM, SMTP_TO required) — skipping email notification.")
-        return
+        return None
 
     new, known, resolved = _split_by_status(updates)
     total = len(new) + len(known) + len(resolved)
@@ -234,6 +240,9 @@ def notify(
             if _config.SMTP_USERNAME and _config.SMTP_PASSWORD:
                 server.login(_config.SMTP_USERNAME, _config.SMTP_PASSWORD)
             server.sendmail(_config.SMTP_FROM, _config.SMTP_TO, msg.as_string())
-        _config.log.info(f"Email sent to {', '.join(_config.SMTP_TO)} with {len(updates)} update(s)")
     except Exception as exc:
         _config.log.error(f"Failed to send email notification: {exc}")
+        return False
+
+    _config.log.info(f"Email sent to {', '.join(_config.SMTP_TO)} with {len(updates)} update(s)")
+    return True

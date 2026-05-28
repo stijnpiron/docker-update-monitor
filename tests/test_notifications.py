@@ -172,6 +172,65 @@ class TestNotifyEmptyList:
         mock_session.post.assert_not_called()
 
 
+class TestNotifyReturnValue:
+    """notify() returns True on success, False on failure, None when not attempted."""
+
+    @patch.object(http_mod, "http_session")
+    def test_returns_true_on_success(self, mock_session):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+
+        with patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
+            assert notify([_make_update()]) is True
+
+    @patch.object(http_mod, "http_session")
+    def test_returns_false_on_request_exception(self, mock_session):
+        import requests
+        mock_session.post.side_effect = requests.ConnectionError("refused")
+
+        with patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
+            assert notify([_make_update()]) is False
+
+    @patch.object(http_mod, "http_session")
+    def test_returns_false_on_http_error_status(self, mock_session):
+        from requests.exceptions import HTTPError
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = HTTPError("500")
+        mock_session.post.return_value = mock_resp
+
+        with patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
+            assert notify([_make_update()]) is False
+
+    @patch.object(http_mod, "http_session")
+    def test_returns_none_on_dry_run(self, mock_session):
+        with patch.object(config_mod, "DRY_RUN", True), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"):
+            assert notify([_make_update()]) is None
+
+    @patch.object(http_mod, "http_session")
+    def test_returns_none_when_no_endpoint(self, mock_session):
+        with patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", ""):
+            assert notify([_make_update()]) is None
+
+    @patch.object(http_mod, "http_session")
+    def test_returns_none_when_nothing_to_send(self, mock_session):
+        with patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"):
+            assert notify([]) is None
+
+
 class TestNotifyPayloadStructure:
     """Payload grouping, field removal, mismatches and warnings."""
 
