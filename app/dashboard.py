@@ -8,7 +8,7 @@ from flask import Flask, Response, jsonify, render_template
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 import app.config as _config
-from app.health import update_state, _state, _state_lock, _build_response
+from app.health import _state, _state_lock, _build_response
 from app.state import get_all_updates
 
 _scan_trigger = threading.Event()
