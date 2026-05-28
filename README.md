@@ -356,6 +356,33 @@ python3 -m venv .venv
 plus test tooling (`pytest`, `pytest-cov`). The Docker image only installs
 `requirements.txt` to keep the production image lean.
 
+### Dependency locking
+
+Dependencies are managed with [`pip-tools`](https://github.com/jazzband/pip-tools).
+The human-edited inputs are `requirements.in` and `requirements-dev.in`; the
+fully-pinned, hashed `requirements.txt` and `requirements-dev.txt` are generated
+from them and are what gets installed everywhere (Docker image, CI, local dev).
+Pinning every transitive dependency with a hash gives reproducible builds and
+guards against supply-chain surprises.
+
+To add, remove, or bump a dependency:
+
+```bash
+# 1. Edit the .in file (e.g. add a new line to requirements.in)
+$EDITOR requirements.in
+
+# 2. Re-lock — installs pip-tools if needed
+.venv/bin/pip install pip-tools
+.venv/bin/pip-compile --generate-hashes --output-file=requirements.txt requirements.in
+.venv/bin/pip-compile --generate-hashes --output-file=requirements-dev.txt requirements-dev.in
+
+# 3. Sync your venv to the new lock
+.venv/bin/pip install -r requirements-dev.txt
+```
+
+Dependabot opens PRs against the `.in` files; after merging a bump, re-run
+`pip-compile` to refresh the lock files.
+
 ### Running tests
 
 ```bash
@@ -382,8 +409,10 @@ export RUN_ON_STARTUP=true
 
 ```
 monitor.py              # Main application
-requirements.txt        # Runtime dependencies (used in Docker image)
-requirements-dev.txt    # Dev/test dependencies (includes requirements.txt)
+requirements.in         # Runtime dependency declarations (human-edited)
+requirements.txt        # Locked runtime deps with hashes (used in Docker image)
+requirements-dev.in     # Dev/test dependency declarations (human-edited)
+requirements-dev.txt    # Locked dev/test deps with hashes
 pyproject.toml          # pytest & coverage configuration
 Dockerfile              # Production container
 docker-compose.yml      # Docker Compose deployment
