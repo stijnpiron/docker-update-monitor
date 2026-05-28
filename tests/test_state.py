@@ -565,6 +565,40 @@ class TestDigestAutoResolve:
         assert resolved[0].new_version == "1.2.0"
 
 
+class TestStateDbPathResolvedAtCallTime:
+    """Regression tests for #145: STATE_DB_PATH must be resolved on every _connect()."""
+
+    def test_save_last_check_honors_path_set_after_import(self, tmp_path):
+        new_path = tmp_path / "late_bind.db"
+        with patch("app.config.STATE_DB_PATH", str(new_path)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+
+        assert new_path.exists()
+
+    def test_path_change_redirects_reads_and_writes(self, tmp_path):
+        first_path = tmp_path / "first.db"
+        second_path = tmp_path / "second.db"
+
+        with patch("app.config.STATE_DB_PATH", str(first_path)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+
+        with patch("app.config.STATE_DB_PATH", str(second_path)):
+            assert state.load_last_check() is None
+            state.save_last_check("2026-02-02T00:00:00+00:00")
+            assert state.load_last_check() == "2026-02-02T00:00:00+00:00"
+
+        with patch("app.config.STATE_DB_PATH", str(first_path)):
+            assert state.load_last_check() == "2026-01-01T00:00:00+00:00"
+
+    def test_parent_directory_created_at_call_time(self, tmp_path):
+        nested = tmp_path / "nested" / "subdir" / "state.db"
+        with patch("app.config.STATE_DB_PATH", str(nested)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+
+        assert nested.exists()
+        assert nested.parent.is_dir()
+
+
 class TestProcessScanEdgeCases:
     def test_empty_container_name(self):
         """Update with empty container_name is stored and retrieved."""
