@@ -8,12 +8,18 @@ import pytest
 
 from app import http as http_mod
 from app import main as main_mod
+from app import state as state_mod
 
 
 @pytest.fixture(autouse=True)
 def _state_db_in_tmp(tmp_path):
     """Redirect the state DB to a temp directory for every test."""
     db_path = str(tmp_path / "state.db")
+    # Drop any cached connection from a prior test so each test starts cold.
+    if state_mod._conn is not None:
+        state_mod._conn.close()
+    state_mod._conn = None
+    state_mod._conn_path = None
     with patch("app.config.STATE_DB_PATH", db_path):
         yield
 

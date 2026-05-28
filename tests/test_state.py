@@ -1,5 +1,6 @@
 """Unit tests for app.state — SQLite state persistence."""
 
+import sqlite3
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -617,3 +618,119 @@ class TestProcessScanEdgeCases:
         result = state.process_scan([u], scan_time=t)
         assert len(result) == 1
         assert result[0].image == ""
+
+
+class TestConnectionCaching:
+    """Regression tests for #146: connection + schema + migrations reused across calls."""
+
+    def test_schema_and_migrations_run_once_for_repeated_calls(self):
+        """run_migrations is invoked at most once across many state operations."""
+        u = _make_update()
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        with patch("app.state.run_migrations", wraps=state.run_migrations) as spy:
+            state.process_scan([u], scan_time=t)
+            state.get_active_updates()
+            state.get_all_updates()
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+            state.load_last_check()
+            state.store_digest("nginx", "latest", "sha256:abc")
+            state.get_stored_digest("nginx", "latest")
+            state.mark_notified([u], notified_time=t)
+            state.process_scan([u], scan_time=t)
+
+        assert spy.call_count == 1
+
+    def test_connection_is_reused_across_calls(self):
+        """All state operations share the same sqlite3 connection object."""
+        state.save_last_check("2026-01-01T00:00:00+00:00")
+        first = state._conn
+        assert first is not None
+
+        state.load_last_check()
+        state.get_active_updates()
+        state.get_all_updates()
+        state.store_digest("nginx", "latest", "sha256:abc")
+        state.get_stored_digest("nginx", "latest")
+
+        assert state._conn is first
+
+    def test_path_change_closes_and_replaces_connection(self, tmp_path):
+        """Switching STATE_DB_PATH closes the old connection and opens a new one."""
+        first_path = tmp_path / "first.db"
+        second_path = tmp_path / "second.db"
+
+        with patch("app.config.STATE_DB_PATH", str(first_path)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+            first_conn = state._conn
+            assert state._conn_path == str(first_path)
+
+        with patch("app.config.STATE_DB_PATH", str(second_path)):
+            state.save_last_check("2026-02-02T00:00:00+00:00")
+            assert state._conn is not first_conn
+            assert state._conn_path == str(second_path)
+
+        # The first connection was closed when we switched paths.
+        with pytest.raises(sqlite3.ProgrammingError):
+            first_conn.execute("SELECT 1")
+
+    def test_concurrent_access_is_thread_safe(self):
+        """Many threads hammering state functions in parallel do not corrupt state."""
+        import threading
+
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        errors: list[BaseException] = []
+
+        def worker(idx: int) -> None:
+            try:
+                u = _make_update(
+                    container_name=f"c{idx}",
+                    image=f"img{idx}",
+                    new_version=f"1.{idx}.0",
+                )
+                for _ in range(5):
+                    state.process_scan([u], scan_time=t0)
+                    state.save_last_check(t0.isoformat())
+                    state.load_last_check()
+                    state.store_digest(f"img{idx}", "latest", f"sha256:{idx}")
+                    state.get_stored_digest(f"img{idx}", "latest")
+                    state.get_active_updates()
+                    state.get_all_updates()
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        assert errors == []
+        # One row per worker survived the concurrent writes.
+        active = state.get_active_updates()
+        assert len(active) == 8
+        assert {row["container_name"] for row in active} == {f"c{i}" for i in range(8)}
+
+    def test_connection_uses_check_same_thread_false(self):
+        """Cached connection must allow cross-thread reuse."""
+        import threading
+
+        state.save_last_check("2026-01-01T00:00:00+00:00")
+        conn = state._conn
+        assert conn is not None
+
+        errors: list[BaseException] = []
+
+        def use_from_other_thread() -> None:
+            try:
+                state.load_last_check()
+            except BaseException as exc:
+                errors.append(exc)
+
+        th = threading.Thread(target=use_from_other_thread)
+        th.start()
+        th.join()
+
+        assert errors == []
+        # Cached connection wasn't swapped out — it really was reused cross-thread.
+        assert state._conn is conn
