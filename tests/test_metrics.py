@@ -10,6 +10,7 @@ from app.metrics import (
     check_duration_seconds,
     check_errors_total,
     last_check_timestamp_seconds,
+    notifications_attempted_total,
     notifications_sent_total,
     update_after_scan,
 )
@@ -142,34 +143,76 @@ class TestCheckErrorsCounter:
 
 
 class TestNotificationsSentCounter:
-    """notifications_sent_total increments per channel dispatch."""
+    """notifications_sent_total increments only on successful delivery."""
 
-    def test_increments_webhook_channel(self):
-        before = notifications_sent_total.labels(channel="webhook")._value.get()
-        with patch("app.notifications.webhook_notify"), \
+    def test_increments_webhook_on_success(self):
+        before_a = notifications_attempted_total.labels(channel="webhook")._value.get()
+        before_s = notifications_sent_total.labels(channel="webhook")._value.get()
+        with patch("app.notifications.webhook_notify", return_value=True), \
              patch("app.config.NOTIFY_CHANNELS", ["webhook"]):
             from app.notifications import dispatch
             u = UpdateInfo("c", "s", "st", "img", "1.0", "2.0", "major", status="new")
             dispatch([u])
-        assert notifications_sent_total.labels(channel="webhook")._value.get() == before + 1.0
+        assert notifications_attempted_total.labels(channel="webhook")._value.get() == before_a + 1.0
+        assert notifications_sent_total.labels(channel="webhook")._value.get() == before_s + 1.0
 
-    def test_increments_email_channel(self):
-        before = notifications_sent_total.labels(channel="email")._value.get()
-        with patch("app.notifications.email_notify"), \
+    def test_increments_email_on_success(self):
+        before_a = notifications_attempted_total.labels(channel="email")._value.get()
+        before_s = notifications_sent_total.labels(channel="email")._value.get()
+        with patch("app.notifications.email_notify", return_value=True), \
              patch("app.config.NOTIFY_CHANNELS", ["email"]):
             from app.notifications import dispatch
             u = UpdateInfo("c", "s", "st", "img", "1.0", "2.0", "major", status="new")
             dispatch([u])
-        assert notifications_sent_total.labels(channel="email")._value.get() == before + 1.0
+        assert notifications_attempted_total.labels(channel="email")._value.get() == before_a + 1.0
+        assert notifications_sent_total.labels(channel="email")._value.get() == before_s + 1.0
+
+    def test_webhook_failure_increments_attempted_only(self):
+        before_a = notifications_attempted_total.labels(channel="webhook")._value.get()
+        before_s = notifications_sent_total.labels(channel="webhook")._value.get()
+        with patch("app.notifications.webhook_notify", return_value=False), \
+             patch("app.config.NOTIFY_CHANNELS", ["webhook"]):
+            from app.notifications import dispatch
+            u = UpdateInfo("c", "s", "st", "img", "1.0", "2.0", "major", status="new")
+            dispatch([u])
+        assert notifications_attempted_total.labels(channel="webhook")._value.get() == before_a + 1.0
+        assert notifications_sent_total.labels(channel="webhook")._value.get() == before_s
+
+    def test_email_failure_increments_attempted_only(self):
+        before_a = notifications_attempted_total.labels(channel="email")._value.get()
+        before_s = notifications_sent_total.labels(channel="email")._value.get()
+        with patch("app.notifications.email_notify", return_value=False), \
+             patch("app.config.NOTIFY_CHANNELS", ["email"]):
+            from app.notifications import dispatch
+            u = UpdateInfo("c", "s", "st", "img", "1.0", "2.0", "major", status="new")
+            dispatch([u])
+        assert notifications_attempted_total.labels(channel="email")._value.get() == before_a + 1.0
+        assert notifications_sent_total.labels(channel="email")._value.get() == before_s
+
+    def test_skipped_notifier_does_not_increment_either_counter(self):
+        """When the notifier returns None (no attempt made), neither counter moves."""
+        before_a = notifications_attempted_total.labels(channel="webhook")._value.get()
+        before_s = notifications_sent_total.labels(channel="webhook")._value.get()
+        with patch("app.notifications.webhook_notify", return_value=None), \
+             patch("app.config.NOTIFY_CHANNELS", ["webhook"]):
+            from app.notifications import dispatch
+            u = UpdateInfo("c", "s", "st", "img", "1.0", "2.0", "major", status="new")
+            dispatch([u])
+        assert notifications_attempted_total.labels(channel="webhook")._value.get() == before_a
+        assert notifications_sent_total.labels(channel="webhook")._value.get() == before_s
 
     def test_no_increment_when_nothing_to_notify(self):
-        before_w = notifications_sent_total.labels(channel="webhook")._value.get()
-        before_e = notifications_sent_total.labels(channel="email")._value.get()
+        before_aw = notifications_attempted_total.labels(channel="webhook")._value.get()
+        before_sw = notifications_sent_total.labels(channel="webhook")._value.get()
+        before_ae = notifications_attempted_total.labels(channel="email")._value.get()
+        before_se = notifications_sent_total.labels(channel="email")._value.get()
         with patch("app.config.NOTIFY_CHANNELS", ["webhook", "email"]):
             from app.notifications import dispatch
             dispatch([])
-        assert notifications_sent_total.labels(channel="webhook")._value.get() == before_w
-        assert notifications_sent_total.labels(channel="email")._value.get() == before_e
+        assert notifications_attempted_total.labels(channel="webhook")._value.get() == before_aw
+        assert notifications_sent_total.labels(channel="webhook")._value.get() == before_sw
+        assert notifications_attempted_total.labels(channel="email")._value.get() == before_ae
+        assert notifications_sent_total.labels(channel="email")._value.get() == before_se
 
 
 class TestMetricsEndpoint:
@@ -217,6 +260,11 @@ class TestMetricsEndpoint:
         resp = client.get("/metrics")
         body = resp.data.decode()
         assert "dum_notifications_sent_total" in body
+
+    def test_contains_dum_notifications_attempted_total(self, client):
+        resp = client.get("/metrics")
+        body = resp.data.decode()
+        assert "dum_notifications_attempted_total" in body
 
     def test_metric_values_reflect_last_scan(self, client):
         import re

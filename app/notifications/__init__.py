@@ -2,7 +2,17 @@ import app.config as _config
 from app.models import UpdateInfo, RegexMismatch, ScanWarning
 from app.notifications.webhook import notify as webhook_notify
 from app.notifications.email import notify as email_notify
-from app.metrics import notifications_sent_total
+from app.metrics import notifications_attempted_total, notifications_sent_total
+
+
+def _record(channel: str, result: bool | None) -> None:
+    """Update attempted/sent counters based on a notifier return value."""
+    if result is None:
+        # Notifier skipped (no payload, dry-run, missing config) — no attempt made.
+        return
+    notifications_attempted_total.labels(channel=channel).inc()
+    if result:
+        notifications_sent_total.labels(channel=channel).inc()
 
 
 def dispatch(
@@ -17,10 +27,10 @@ def dispatch(
 
     for channel in _config.NOTIFY_CHANNELS:
         if channel == "webhook":
-            webhook_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
-            notifications_sent_total.labels(channel="webhook").inc()
+            result = webhook_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
+            _record("webhook", result)
         elif channel == "email":
-            email_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
-            notifications_sent_total.labels(channel="email").inc()
+            result = email_notify(updates, mismatches=mismatches or [], warnings=warnings or [])
+            _record("email", result)
         else:
             _config.log.warning(f"Unknown notification channel '{channel}' — skipping")
