@@ -551,10 +551,10 @@ class TestRunCheckCooldown:
     @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
-    def test_resolved_updates_always_pass_through(
+    def test_resolved_updates_excluded_from_notification(
         self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
     ):
-        """Resolved updates are never blocked by the cooldown filter."""
+        """Resolved updates are informational only and never enter the notification payload."""
         fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
         # first_seen_at is 1 minute ago — well within any cooldown
         first_seen = (fixed_now - timedelta(minutes=1)).isoformat()
@@ -569,19 +569,70 @@ class TestRunCheckCooldown:
             status="resolved",
             first_seen_at=first_seen,
         )
-        mock_scan.return_value = [resolved]
+        pending = UpdateInfo(
+            container_name=self._CONTAINER_NAME,
+            service_name=self._CONTAINER_NAME,
+            stack="stack",
+            image="redis",
+            current_version="1.0.0",
+            new_version="2.0.0",
+            update_type="major",
+            status="new",
+            first_seen_at=first_seen,
+        )
+        mock_scan.return_value = [resolved, pending]
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
             run_check()
 
         notified_updates = mock_notify.call_args[0][0]
-        assert len(notified_updates) == 1
-        assert notified_updates[0].status == "resolved"
+        # Only the pending update is notified; the resolved one is dropped.
+        assert [u.status for u in notified_updates] == ["new"]
+        assert notified_updates[0].image == "redis"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_resolved_only_scan_sends_empty_payload(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """A scan whose only change is a resolution notifies with an empty update list."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        resolved = UpdateInfo(
+            container_name=self._CONTAINER_NAME,
+            service_name=self._CONTAINER_NAME,
+            stack="stack",
+            image="nginx",
+            current_version="2.0.0",
+            new_version="2.0.0",
+            update_type="major",
+            status="resolved",
+            first_seen_at=(fixed_now - timedelta(minutes=1)).isoformat(),
+        )
+        mock_scan.return_value = [resolved]
+
+        self._mock_docker(mock_docker)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        # notify() is still called, but with no updates — email/webhook layers
+        # treat an empty payload as "nothing to send".
+        notified_updates = mock_notify.call_args[0][0]
+        assert notified_updates == []
+        # Nothing was marked notified either.
+        mock_mark.assert_not_called()
 
 
 class TestIsHigherVersion:
