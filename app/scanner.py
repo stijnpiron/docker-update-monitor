@@ -480,12 +480,15 @@ def run_check() -> None:
         resolved_count = sum(1 for u in categorized if u.status == "resolved")
         _config.log.info(f"  New: {new_count}  |  Known: {known_count}  |  Resolved: {resolved_count}")
 
-        # Apply cooldown — suppress new/known updates that haven't matured yet
+        # Build the notification payload — pending (new/known) updates only.
+        # Resolved updates are informational; they are persisted in the DB and
+        # surfaced by the web dashboard, but notifications are for actionable
+        # (still-pending) updates, so they're excluded here.
+        # Also apply cooldown — suppress new/known updates that haven't matured yet.
         global_cooldown = parse_cooldown(_config.UPDATE_COOLDOWN)
         actionable: list[UpdateInfo] = []
         for u in categorized:
             if u.status == "resolved":
-                actionable.append(u)
                 continue
             cooldown = container_cooldowns.get(u.container_name, global_cooldown)
             if cooldown and u.first_seen_at:
