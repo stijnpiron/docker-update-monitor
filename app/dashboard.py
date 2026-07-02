@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import Flask, jsonify, render_template
 
 import app.config as _config
-from app.health import update_state, _state, _state_lock, _build_response
+from app.health import _state, _state_lock, _build_response
 from app.state import get_all_updates
 
 _scan_trigger = threading.Event()
