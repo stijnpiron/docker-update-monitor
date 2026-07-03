@@ -1,7 +1,7 @@
 """Unit tests for run_check() — Docker connection, container processing, and main() edge cases."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 from app import config as config_mod
@@ -20,6 +20,27 @@ def _make_container(name, image_tag, labels, has_image_tags=True):
     else:
         c.image.tags = []
     c.attrs = {"Config": {"Image": image_tag}}
+    return c
+
+
+def _make_pruned_container(name, image_tag, labels):
+    """Create a container mock whose backing image was pruned.
+
+    Accessing ``.image`` raises ``docker.errors.ImageNotFound`` — exactly what the
+    Docker SDK does when its lazy ``images.get()`` lookup returns a 404 (issue #163).
+    A dedicated MagicMock subclass keeps the raising property off the shared
+    MagicMock class so it can't leak into other containers/tests.
+    """
+    from docker.errors import ImageNotFound
+
+    class _PrunedContainer(MagicMock):
+        pass
+
+    c = _PrunedContainer()
+    c.name = name
+    c.labels = labels
+    c.attrs = {"Config": {"Image": image_tag}}
+    type(c).image = PropertyMock(side_effect=ImageNotFound(f"No such image: {image_tag}"))
     return c
 
 
@@ -379,6 +400,65 @@ class TestRunCheckContainerProcessing:
 
         assert "Invalid tag-regex" in caplog.text
         mock_fetch.assert_not_called()
+
+
+class TestRunCheckImageNotFound:
+    """Resilience when a container's image can no longer be inspected (fix #163)."""
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_pruned_image_reported_not_crashed(
+        self, mock_docker, mock_token, mock_fetch, mock_notify, caplog
+    ):
+        """A container whose image was pruned is reported as an error, not crashed on."""
+        import logging
+
+        pruned = _make_pruned_container(
+            "pruned-app", "ghost:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [pruned]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), caplog.at_level(logging.ERROR):
+            run_check()  # must not raise — previously this crashed the process
+
+        assert "Could not inspect image" in caplog.text
+        # The scan still completed end-to-end.
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_pruned_image_does_not_block_other_containers(
+        self, mock_docker, mock_token, mock_fetch, mock_notify
+    ):
+        """A broken container must not stop healthy containers from being scanned."""
+        pruned = _make_pruned_container(
+            "pruned-app", "ghost:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        healthy = _make_container(
+            "healthy-app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [pruned, healthy]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # The healthy container was scanned and its update reported despite the
+        # pruned one appearing first in the list.
+        mock_fetch.assert_called_once()
+        updates = mock_notify.call_args[0][0]
+        assert [u.container_name for u in updates] == ["healthy-app"]
+        assert updates[0].new_version == "2.0.0"
 
 
 class TestRunCheckCooldown:
@@ -891,6 +971,17 @@ class TestMainEdgeCases:
              pytest.raises(SystemExit) as exc_info:
             main_mod.main()
         assert exc_info.value.code == 1
+
+    def test_safe_run_check_swallows_exceptions(self, caplog):
+        """A crashing run_check() is logged but never propagates out of the scheduler (fix #163)."""
+        import logging
+
+        with patch("app.main.run_check", side_effect=RuntimeError("boom")), \
+             caplog.at_level(logging.ERROR):
+            main_mod._safe_run_check()  # must not raise
+
+        assert "Update check failed" in caplog.text
+        assert "boom" in caplog.text
 
     @patch("app.main.run_check")
     def test_dry_run_logs_mode(self, mock_run_check, caplog):
