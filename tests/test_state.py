@@ -147,6 +147,27 @@ class TestResolve:
         assert len(state.get_active_updates()) == 0
         assert len(state.get_all_updates()) == 0
 
+    def test_bad_pattern_in_resolve_is_swallowed(self):
+        """A pattern that raises during parse must not crash the resolve loop.
+
+        A pattern that fullmatches the tag but exposes no capture groups makes
+        parse_tag() raise ValueError. The resolve loop swallows it, leaving the
+        entry unresolved so it is dropped like a superseded version.
+        """
+        u = _make_update(new_version="1.1.0", update_type="minor")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Pattern matches the tag but has zero capture groups → parse_tag raises.
+        cv = {("web", "nginx"): ("1.0.0", r"^\d+\.\d+\.\d+$")}
+        result = state.process_scan([], scan_time=t2, current_versions=cv)
+
+        # Not resolved, and the entry is dropped rather than left dangling.
+        assert [r for r in result if r.status == "resolved"] == []
+        assert len(state.get_active_updates()) == 0
+        assert len(state.get_all_updates()) == 0
+
     def test_delete_when_version_superseded(self):
         """Old entry is deleted when a newer version replaces it."""
         u1 = _make_update(new_version="1.1.0", update_type="minor")

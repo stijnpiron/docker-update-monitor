@@ -108,6 +108,27 @@ class TestRunCheckContainerProcessing:
 
         mock_fetch.assert_called_once()
 
+    @patch("app.scanner.update_state")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_unmonitored_container_without_tags_uses_config_image(
+        self, mock_docker, mock_token, mock_update_state
+    ):
+        """A container with no tag-regex label and no image.tags is listed as
+        skipped using its Config.Image reference as the fallback display name."""
+        container = _make_container("no-label", "repo/app:1.2.3", {}, has_image_tags=False)
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        skipped = mock_update_state.call_args.kwargs["skipped_containers"]
+        assert len(skipped) == 1
+        assert skipped[0]["image"] == "repo/app:1.2.3"
+        assert skipped[0]["container_name"] == "no-label"
+
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
     def test_container_with_no_image_ref_skipped(self, mock_docker, mock_token, caplog):
