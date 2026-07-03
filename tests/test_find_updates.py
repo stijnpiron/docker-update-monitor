@@ -115,6 +115,15 @@ class TestEdgeCases:
         result = find_updates("5", ["6", "7"], r"^(\d+)$")
         assert result == {}
 
+    def test_no_capture_group_pattern_returns_empty(self):
+        """A pattern matching the current tag with zero capture groups is handled.
+
+        parse_tag() raises ValueError in this case; find_updates() must swallow it
+        and return no updates rather than propagating the error.
+        """
+        result = find_updates("1.0", ["2.0", "3.0"], r"^\d+\.\d+$")
+        assert result == {}
+
     def test_pattern_not_matching_current_tag(self):
         result = find_updates("latest", ["1.0.0"], r"^(\d+)\.(\d+)\.(\d+)$")
         assert result == {}
