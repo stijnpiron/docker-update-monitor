@@ -117,6 +117,19 @@ def run_check() -> None:
         containers = client.containers.list()
         _config.log.info(f"Running containers: {len(containers)}")
 
+        # Full set of container names Docker currently knows about (running and
+        # stopped).  Used to distinguish a *removed* container — whose pending
+        # update should be dropped — from one that merely failed to scan this
+        # cycle.  If the listing fails, fall back to None so removal cleanup is
+        # skipped rather than risking deletion on incomplete data.
+        try:
+            existing_containers: set[str] | None = {
+                c.name or "" for c in client.containers.list(all=True)
+            }
+        except DockerException as exc:
+            _config.log.warning(f"Could not list all containers: {exc} — skipping removal cleanup")
+            existing_containers = None
+
         # Cache tag lists — keyed by (image_name, current_tag) so that the
         # DockerHub early-stop optimisation doesn't miss tags when two containers
         # run different versions of the same image.
@@ -463,6 +476,7 @@ def run_check() -> None:
             all_updates, scan_time,
             current_versions=monitored_versions,
             running_digests=running_digests,
+            existing_containers=existing_containers,
         )
 
         # Deduplicate: keep only the highest new_version per (container, image, update_type).
