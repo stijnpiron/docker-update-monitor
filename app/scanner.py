@@ -146,6 +146,24 @@ def run_check() -> None:
         for container in containers:
             container_name: str = container.name or ""
             labels  = container.labels
+
+            # Resolve the container's image once. Accessing container.image lazily
+            # calls the Docker API (images.get); if the underlying image was pruned
+            # or removed out from under a still-listed container it raises
+            # ImageNotFound. Contain that failure here so a single broken container
+            # is reported but can't crash the whole scan (fix #163).
+            try:
+                image_obj = container.image
+            except (DockerException, requests.RequestException) as exc:
+                image_hint = container.attrs.get("Config", {}).get("Image", "") or ""
+                msg = f"Could not inspect image: {exc}"
+                _config.log.error(f"  [{container_name}] {msg} — skipping")
+                all_warnings.append(ScanWarning(
+                    container_name=container_name, image=image_hint,
+                    level="error", message=msg,
+                ))
+                continue
+
             mode    = labels.get(f"{_config.LABEL_PREFIX}.mode", "").lower()
             pattern = labels.get(f"{_config.LABEL_PREFIX}.tag-regex")
 
@@ -153,8 +171,8 @@ def run_check() -> None:
                 _config.log.debug(f"  [{container_name}] No '{_config.LABEL_PREFIX}.tag-regex' label — skipping")
                 # Determine image for display
                 skip_image = ""
-                if container.image.tags:
-                    skip_image = container.image.tags[0]
+                if image_obj.tags:
+                    skip_image = image_obj.tags[0]
                 else:
                     skip_image = container.attrs.get("Config", {}).get("Image", "")
                 skip_stack = (
@@ -195,8 +213,8 @@ def run_check() -> None:
 
             # Resolve full image reference
             image_ref = None
-            if container.image.tags:
-                image_ref = container.image.tags[0]
+            if image_obj.tags:
+                image_ref = image_obj.tags[0]
             else:
                 # Fallback: read from container attrs
                 image_ref = container.attrs.get("Config", {}).get("Image", "")
@@ -236,7 +254,7 @@ def run_check() -> None:
                 # Explicit digest mode: compare the local running image digest (RepoDigests)
                 # against the remote registry digest via HEAD request.  Works on first scan —
                 # no need for a silent storage phase.
-                repo_digests = container.image.attrs.get("RepoDigests") or []
+                repo_digests = image_obj.attrs.get("RepoDigests") or []
                 local_digest = _extract_local_digest(repo_digests)
 
                 if not local_digest:
@@ -272,7 +290,7 @@ def run_check() -> None:
                     # is unchanged before reporting an update.
                     platform_match = False
                     try:
-                        image_attrs = container.image.attrs or {}
+                        image_attrs = image_obj.attrs or {}
                         container_os = image_attrs.get("Os", "") or ""
                         container_arch = image_attrs.get("Architecture", "") or ""
                         if container_os and container_arch:
@@ -401,7 +419,7 @@ def run_check() -> None:
                 # auto-resolution can compare against the running image's RepoDigests.
                 monitored_versions[(container_name, image_name)] = (current_tag, pattern)
                 running_digests[(container_name, image_name)] = (
-                    container.image.attrs.get("RepoDigests") or []
+                    image_obj.attrs.get("RepoDigests") or []
                 )
                 continue
 
@@ -414,7 +432,7 @@ def run_check() -> None:
             container_arch: str = ""
             if check_arch:
                 try:
-                    image_attrs = container.image.attrs or {}
+                    image_attrs = image_obj.attrs or {}
                     container_os = image_attrs.get("Os", "") or ""
                     container_arch = image_attrs.get("Architecture", "") or ""
                     if not container_os or not container_arch:
