@@ -792,6 +792,97 @@ class TestRunCheckDeduplication:
         assert len(updates) == 2
 
 
+class TestRunCheckRemovedContainer:
+    """End-to-end removal cleanup (fix #165)."""
+
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_removed_container_update_dropped(self, mock_docker, mock_token, mock_fetch):
+        """A pending update disappears once its container is removed."""
+        from app.state import get_all_updates
+
+        container = _make_container(
+            "app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+        assert len(get_all_updates()) == 1  # update recorded while running
+
+        # Container removed: Docker no longer lists it (running or otherwise).
+        client.containers.list.return_value = []
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        assert get_all_updates() == []  # update dropped
+
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_present_container_transient_failure_keeps_update(self, mock_docker, mock_token):
+        """A still-running container whose scan fails keeps its pending update."""
+        from app.state import get_all_updates
+
+        container = _make_container(
+            "app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        # Scan 1: update found and recorded.
+        with patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"]), \
+             patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+        assert len(get_all_updates()) == 1
+
+        # Scan 2: container still present, but registry returns no tags (transient).
+        with patch("app.scanner.fetch_all_tags", return_value=[]), \
+             patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Update preserved — the container still exists, the scan just failed.
+        assert len(get_all_updates()) == 1
+
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_all_listing_failure_skips_cleanup(self, mock_docker, mock_token, mock_fetch):
+        """If listing all containers fails, removal cleanup is skipped (entry kept)."""
+        from docker.errors import APIError
+        from app.state import get_all_updates
+
+        container = _make_container(
+            "app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+        assert len(get_all_updates()) == 1
+
+        # Container removed AND the all=True listing errors out — degrade safely.
+        def _list(*args, **kwargs):
+            if kwargs.get("all"):
+                raise APIError("boom")
+            return []
+
+        client.containers.list.side_effect = _list
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Cleanup skipped rather than risking deletion on incomplete data.
+        assert len(get_all_updates()) == 1
+
+
 class TestMainEdgeCases:
     """Edge cases in main()."""
 

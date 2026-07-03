@@ -88,6 +88,7 @@ def process_scan(
     scan_time: datetime | None = None,
     current_versions: dict[tuple[str, str], tuple[str, str]] | None = None,
     running_digests: dict[tuple[str, str], list[str]] | None = None,
+    existing_containers: set[str] | None = None,
 ) -> list[UpdateInfo]:
     """Upsert scan results, resolve or delete absent entries, return updates with status.
 
@@ -107,8 +108,13 @@ def process_scan(
     a digest update entry is resolved if the container's running image already contains
     the stored (new) digest — meaning the user repulled and restarted the container.
 
-    Entries for containers *not* in *current_versions* are left untouched (the
-    container may have been temporarily unreachable).
+    *existing_containers* is the set of container names Docker currently knows about
+    (running *and* stopped).  When provided, active entries whose container name is
+    absent from this set are **deleted** — the container has been removed, so its
+    pending update is no longer relevant and must not keep showing up in the overview.
+
+    Entries for containers that still exist but are *not* in *current_versions* are
+    left untouched (the container may have been temporarily unreachable).
     """
     if scan_time is None:
         scan_time = datetime.now(timezone.utc)
@@ -152,6 +158,14 @@ def process_scan(
             key = (row["container_name"], row["image"], row["current_version"], row["update_type"])
             if key in current_keys:
                 continue  # still detected, already upserted
+
+            # Container was removed entirely — forget its pending update so it
+            # stops appearing in the overview.  A removed container differs from a
+            # transiently unreachable one: it is genuinely gone, so the update is
+            # no longer actionable.
+            if existing_containers is not None and row["container_name"] not in existing_containers:
+                conn.execute("DELETE FROM updates WHERE id = ?", (row["id"],))
+                continue
 
             cv_key = (row["container_name"], row["image"])
             if cv_key not in current_versions:

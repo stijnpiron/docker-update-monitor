@@ -204,6 +204,102 @@ class TestResolve:
         assert len(state.get_all_updates()) == 1
 
 
+class TestRemovedContainer:
+    """Removed containers (fix #165): their pending updates must be dropped."""
+
+    def test_removed_container_update_deleted(self):
+        """An active update is deleted when its container no longer exists."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Container "web" was removed — it isn't in the existing set anymore.
+        result = state.process_scan([], scan_time=t2, existing_containers=set())
+
+        assert result == []
+        assert len(state.get_active_updates()) == 0
+        assert len(state.get_all_updates()) == 0
+
+    def test_present_but_unscanned_container_left_alone(self):
+        """A still-present container that failed to scan keeps its update."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Container still exists but wasn't scanned (not in current_versions) —
+        # e.g. registry was temporarily unreachable. Entry must survive.
+        result = state.process_scan([], scan_time=t2, existing_containers={"web"})
+
+        known = [r for r in result if r.status == "known"]
+        assert len(known) == 1
+        assert len(state.get_active_updates()) == 1
+
+    def test_removed_one_keeps_another(self):
+        """Only the removed container's update is dropped; present ones survive."""
+        u1 = _make_update()  # container "web"
+        u2 = _make_update(container_name="db", image="postgres",
+                          current_version="15.0.0", new_version="15.1.0",
+                          update_type="patch")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u1, u2], scan_time=t1)
+        # "web" removed, "db" still present but unscanned this cycle.
+        result = state.process_scan([], scan_time=t2, existing_containers={"db"})
+
+        remaining = state.get_all_updates()
+        assert len(remaining) == 1
+        assert remaining[0]["container_name"] == "db"
+        assert all(r.container_name != "web" for r in result)
+
+    def test_removed_container_not_notified(self):
+        """A removed container's update is neither resolved nor returned for notification."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        result1 = state.process_scan([u], scan_time=t1)
+        state.mark_notified(result1, notified_time=t1)
+        result = state.process_scan([], scan_time=t2, existing_containers=set())
+
+        # Nothing returned → nothing to notify, and no lingering "resolved" record.
+        assert result == []
+        assert state.get_all_updates() == []
+
+    def test_default_none_preserves_old_behavior(self):
+        """Without existing_containers, absent entries are left untouched."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # No existing_containers passed — cannot tell removed from unreachable.
+        result = state.process_scan([], scan_time=t2)
+
+        known = [r for r in result if r.status == "known"]
+        assert len(known) == 1
+        assert len(state.get_active_updates()) == 1
+
+    def test_present_container_still_resolves(self):
+        """Passing existing_containers does not break normal resolution."""
+        u = _make_update(new_version="1.1.0", update_type="minor")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Container present and updated to 1.1.0 → resolved, not deleted.
+        cv = {("web", "nginx"): ("1.1.0", _PAT)}
+        result = state.process_scan(
+            [], scan_time=t2, current_versions=cv, existing_containers={"web"}
+        )
+
+        resolved = [r for r in result if r.status == "resolved"]
+        assert len(resolved) == 1
+        assert len(state.get_active_updates()) == 0
+
+
 class TestQueryByStatus:
     def test_get_active_excludes_resolved(self):
         u = _make_update()
