@@ -1,13 +1,13 @@
 """Unit tests for run_check() — Docker connection, container processing, and main() edge cases."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 from app import config as config_mod
 from app import main as main_mod
 from app.models import UpdateInfo
-from app.scanner import run_check
+from app.scanner import run_check, _is_higher_version
 
 
 def _make_container(name, image_tag, labels, has_image_tags=True):
@@ -20,6 +20,27 @@ def _make_container(name, image_tag, labels, has_image_tags=True):
     else:
         c.image.tags = []
     c.attrs = {"Config": {"Image": image_tag}}
+    return c
+
+
+def _make_pruned_container(name, image_tag, labels):
+    """Create a container mock whose backing image was pruned.
+
+    Accessing ``.image`` raises ``docker.errors.ImageNotFound`` — exactly what the
+    Docker SDK does when its lazy ``images.get()`` lookup returns a 404 (issue #163).
+    A dedicated MagicMock subclass keeps the raising property off the shared
+    MagicMock class so it can't leak into other containers/tests.
+    """
+    from docker.errors import ImageNotFound
+
+    class _PrunedContainer(MagicMock):
+        pass
+
+    c = _PrunedContainer()
+    c.name = name
+    c.labels = labels
+    c.attrs = {"Config": {"Image": image_tag}}
+    type(c).image = PropertyMock(side_effect=ImageNotFound(f"No such image: {image_tag}"))
     return c
 
 
@@ -37,6 +58,32 @@ class TestRunCheckDockerConnection:
             run_check()
 
         assert "Cannot connect to Docker" in caplog.text
+
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_client_closed_after_successful_run(self, mock_docker, mock_token):
+        """Docker client must be closed after a successful run_check() invocation."""
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = []
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        mock_client.close.assert_called_once()
+
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_client_closed_even_when_scan_raises(self, mock_docker, mock_token):
+        """Docker client must be closed even when an unexpected exception occurs mid-scan."""
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.side_effect = RuntimeError("unexpected failure")
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), pytest.raises(RuntimeError):
+            run_check()
+
+        mock_client.close.assert_called_once()
 
 
 class TestRunCheckContainerProcessing:
@@ -60,6 +107,27 @@ class TestRunCheckContainerProcessing:
             run_check()
 
         mock_fetch.assert_called_once()
+
+    @patch("app.scanner.update_state")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_unmonitored_container_without_tags_uses_config_image(
+        self, mock_docker, mock_token, mock_update_state
+    ):
+        """A container with no tag-regex label and no image.tags is listed as
+        skipped using its Config.Image reference as the fallback display name."""
+        container = _make_container("no-label", "repo/app:1.2.3", {}, has_image_tags=False)
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        skipped = mock_update_state.call_args.kwargs["skipped_containers"]
+        assert len(skipped) == 1
+        assert skipped[0]["image"] == "repo/app:1.2.3"
+        assert skipped[0]["container_name"] == "no-label"
 
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
@@ -355,6 +423,65 @@ class TestRunCheckContainerProcessing:
         mock_fetch.assert_not_called()
 
 
+class TestRunCheckImageNotFound:
+    """Resilience when a container's image can no longer be inspected (fix #163)."""
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_pruned_image_reported_not_crashed(
+        self, mock_docker, mock_token, mock_fetch, mock_notify, caplog
+    ):
+        """A container whose image was pruned is reported as an error, not crashed on."""
+        import logging
+
+        pruned = _make_pruned_container(
+            "pruned-app", "ghost:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [pruned]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), caplog.at_level(logging.ERROR):
+            run_check()  # must not raise — previously this crashed the process
+
+        assert "Could not inspect image" in caplog.text
+        # The scan still completed end-to-end.
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_pruned_image_does_not_block_other_containers(
+        self, mock_docker, mock_token, mock_fetch, mock_notify
+    ):
+        """A broken container must not stop healthy containers from being scanned."""
+        pruned = _make_pruned_container(
+            "pruned-app", "ghost:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        healthy = _make_container(
+            "healthy-app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [pruned, healthy]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # The healthy container was scanned and its update reported despite the
+        # pruned one appearing first in the list.
+        mock_fetch.assert_called_once()
+        updates = mock_notify.call_args[0][0]
+        assert [u.container_name for u in updates] == ["healthy-app"]
+        assert updates[0].new_version == "2.0.0"
+
+
 class TestRunCheckCooldown:
     """Cooldown suppression behaviour in run_check()."""
 
@@ -525,10 +652,10 @@ class TestRunCheckCooldown:
     @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
-    def test_resolved_updates_always_pass_through(
+    def test_resolved_updates_excluded_from_notification(
         self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
     ):
-        """Resolved updates are never blocked by the cooldown filter."""
+        """Resolved updates are informational only and never enter the notification payload."""
         fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
         # first_seen_at is 1 minute ago — well within any cooldown
         first_seen = (fixed_now - timedelta(minutes=1)).isoformat()
@@ -543,19 +670,318 @@ class TestRunCheckCooldown:
             status="resolved",
             first_seen_at=first_seen,
         )
-        mock_scan.return_value = [resolved]
+        pending = UpdateInfo(
+            container_name=self._CONTAINER_NAME,
+            service_name=self._CONTAINER_NAME,
+            stack="stack",
+            image="redis",
+            current_version="1.0.0",
+            new_version="2.0.0",
+            update_type="major",
+            status="new",
+            first_seen_at=first_seen,
+        )
+        mock_scan.return_value = [resolved, pending]
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
             run_check()
 
         notified_updates = mock_notify.call_args[0][0]
-        assert len(notified_updates) == 1
-        assert notified_updates[0].status == "resolved"
+        # Only the pending update is notified; the resolved one is dropped.
+        assert [u.status for u in notified_updates] == ["new"]
+        assert notified_updates[0].image == "redis"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_resolved_only_scan_sends_empty_payload(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """A scan whose only change is a resolution notifies with an empty update list."""
+        fixed_now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        resolved = UpdateInfo(
+            container_name=self._CONTAINER_NAME,
+            service_name=self._CONTAINER_NAME,
+            stack="stack",
+            image="nginx",
+            current_version="2.0.0",
+            new_version="2.0.0",
+            update_type="major",
+            status="resolved",
+            first_seen_at=(fixed_now - timedelta(minutes=1)).isoformat(),
+        )
+        mock_scan.return_value = [resolved]
+
+        self._mock_docker(mock_docker)
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch("app.scanner.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+            run_check()
+
+        # notify() is still called, but with no updates — email/webhook layers
+        # treat an empty payload as "nothing to send".
+        notified_updates = mock_notify.call_args[0][0]
+        assert notified_updates == []
+        # Nothing was marked notified either.
+        mock_mark.assert_not_called()
+
+
+class TestIsHigherVersion:
+    """Unit tests for the _is_higher_version() semver comparison helper."""
+
+    def test_higher_major_wins(self):
+        assert _is_higher_version("10.0.0", "9.0.0") is True
+
+    def test_lower_major_loses(self):
+        assert _is_higher_version("9.0.0", "10.0.0") is False
+
+    def test_equal_versions_not_higher(self):
+        assert _is_higher_version("1.2.3", "1.2.3") is False
+
+    def test_higher_minor_wins(self):
+        assert _is_higher_version("1.10.0", "1.9.0") is True
+
+    def test_higher_patch_wins(self):
+        assert _is_higher_version("1.0.10", "1.0.9") is True
+
+    def test_none_candidate_is_not_higher(self):
+        assert _is_higher_version(None, "1.0.0") is False
+
+    def test_none_current_makes_any_candidate_higher(self):
+        assert _is_higher_version("1.0.0", None) is True
+
+    def test_both_none_not_higher(self):
+        assert _is_higher_version(None, None) is False
+
+    def test_digest_fallback_uses_string_comparison(self):
+        # Non-numeric segments fall back to string comparison
+        assert _is_higher_version("sha256:bbb", "sha256:aaa") is True
+        assert _is_higher_version("sha256:aaa", "sha256:bbb") is False
+
+
+class TestRunCheckDeduplication:
+    """Deduplication of updates with the same (container, image, update_type) key."""
+
+    def _make_update(self, container_name, image, update_type, new_version, current_version="1.0.0"):
+        return UpdateInfo(
+            container_name=container_name,
+            service_name=container_name,
+            stack="stack",
+            image=image,
+            current_version=current_version,
+            new_version=new_version,
+            update_type=update_type,
+            status="new",
+        )
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_duplicate_key_keeps_highest_version(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Two entries with the same key but different new_version → only highest is kept."""
+        lower = self._make_update("app", "nginx", "minor", "1.1.0")
+        higher = self._make_update("app", "nginx", "minor", "1.2.0")
+        mock_scan.return_value = [lower, higher]
+
+        container = _make_container("app", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0].new_version == "1.2.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_duplicate_key_order_independent(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Highest version wins regardless of iteration order (higher entry first)."""
+        higher = self._make_update("app", "nginx", "minor", "1.2.0")
+        lower = self._make_update("app", "nginx", "minor", "1.1.0")
+        mock_scan.return_value = [higher, lower]
+
+        container = _make_container("app", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0].new_version == "1.2.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_semver_crossing_digit_boundary(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """9.0.0 must not beat 10.0.0 — string '9' > '10' but int 9 < 10."""
+        lower = self._make_update("app", "nginx", "major", "9.0.0")
+        higher = self._make_update("app", "nginx", "major", "10.0.0")
+        # 9.0.0 comes after 10.0.0 in the list — string comparison would pick 9.0.0 wrong
+        mock_scan.return_value = [higher, lower]
+
+        container = _make_container("app", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 1
+        assert updates[0].new_version == "10.0.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.mark_notified")
+    @patch("app.scanner.process_scan")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_different_keys_both_kept(
+        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
+    ):
+        """Entries with different keys are all kept."""
+        u1 = self._make_update("app1", "nginx", "minor", "1.1.0")
+        u2 = self._make_update("app2", "redis", "major", "2.0.0")
+        mock_scan.return_value = [u1, u2]
+
+        container = _make_container("app1", "nginx:1.0.0",
+                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        updates = mock_notify.call_args[0][0]
+        assert len(updates) == 2
+
+
+class TestRunCheckRemovedContainer:
+    """End-to-end removal cleanup (fix #165)."""
+
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_removed_container_update_dropped(self, mock_docker, mock_token, mock_fetch):
+        """A pending update disappears once its container is removed."""
+        from app.state import get_all_updates
+
+        container = _make_container(
+            "app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+        assert len(get_all_updates()) == 1  # update recorded while running
+
+        # Container removed: Docker no longer lists it (running or otherwise).
+        client.containers.list.return_value = []
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        assert get_all_updates() == []  # update dropped
+
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_present_container_transient_failure_keeps_update(self, mock_docker, mock_token):
+        """A still-running container whose scan fails keeps its pending update."""
+        from app.state import get_all_updates
+
+        container = _make_container(
+            "app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        # Scan 1: update found and recorded.
+        with patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"]), \
+             patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+        assert len(get_all_updates()) == 1
+
+        # Scan 2: container still present, but registry returns no tags (transient).
+        with patch("app.scanner.fetch_all_tags", return_value=[]), \
+             patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Update preserved — the container still exists, the scan just failed.
+        assert len(get_all_updates()) == 1
+
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_all_listing_failure_skips_cleanup(self, mock_docker, mock_token, mock_fetch):
+        """If listing all containers fails, removal cleanup is skipped (entry kept)."""
+        from docker.errors import APIError
+        from app.state import get_all_updates
+
+        container = _make_container(
+            "app", "nginx:1.0.0",
+            {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"},
+        )
+        client = MagicMock()
+        mock_docker.from_env.return_value = client
+        client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+        assert len(get_all_updates()) == 1
+
+        # Container removed AND the all=True listing errors out — degrade safely.
+        def _list(*args, **kwargs):
+            if kwargs.get("all"):
+                raise APIError("boom")
+            return []
+
+        client.containers.list.side_effect = _list
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Cleanup skipped rather than risking deletion on incomplete data.
+        assert len(get_all_updates()) == 1
 
 
 class TestMainEdgeCases:
@@ -566,6 +992,17 @@ class TestMainEdgeCases:
              pytest.raises(SystemExit) as exc_info:
             main_mod.main()
         assert exc_info.value.code == 1
+
+    def test_safe_run_check_swallows_exceptions(self, caplog):
+        """A crashing run_check() is logged but never propagates out of the scheduler (fix #163)."""
+        import logging
+
+        with patch("app.main.run_check", side_effect=RuntimeError("boom")), \
+             caplog.at_level(logging.ERROR):
+            main_mod._safe_run_check()  # must not raise
+
+        assert "Update check failed" in caplog.text
+        assert "boom" in caplog.text
 
     @patch("app.main.run_check")
     def test_dry_run_logs_mode(self, mock_run_check, caplog):

@@ -22,7 +22,7 @@ class TestHealthcheck:
         mock_urlopen.assert_called_with("http://localhost:8080/health")
 
     @patch("urllib.request.urlopen")
-    def test_http_error_exits_normally(self, mock_urlopen):
+    def test_http_error_exits_with_1(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.HTTPError(
             url="http://localhost:8080/health",
             code=503,
@@ -30,8 +30,9 @@ class TestHealthcheck:
             hdrs={},
             fp=None,
         )
-        # HTTPError is swallowed (503 means server is up)
-        self._run_healthcheck()
+        with pytest.raises(SystemExit) as exc_info:
+            self._run_healthcheck()
+        assert exc_info.value.code == 1
 
     @patch("urllib.request.urlopen")
     def test_connection_error_exits_with_1(self, mock_urlopen):

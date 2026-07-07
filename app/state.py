@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from copy import copy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,8 +8,6 @@ import app.config as _config
 from app.migrations import run_migrations
 from app.models import UpdateInfo
 from app.version import parse_tag
-
-_DB_PATH = Path(_config.STATE_DB_PATH)
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS updates (
@@ -46,16 +45,42 @@ CREATE TABLE IF NOT EXISTS metadata (
 """
 
 
+_conn_lock = threading.Lock()
+_conn: sqlite3.Connection | None = None
+_conn_path: str | None = None
+
+
 def _connect() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB_PATH))
+    """Return the cached module-level SQLite connection.
+
+    Schema creation and migrations run once per (process, db_path). If
+    STATE_DB_PATH changes (e.g. between tests) the old connection is closed
+    and a fresh one is opened. Callers must hold ``_conn_lock`` while using
+    the returned connection — it is shared across threads.
+    """
+    global _conn, _conn_path
+    current_path = _config.STATE_DB_PATH
+    if _conn is not None and _conn_path == current_path:
+        return _conn
+
+    if _conn is not None:
+        _conn.close()
+        _conn = None
+
+    db_path = Path(current_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
     conn.execute(_DIGESTS_SCHEMA)
     conn.execute(_METADATA_SCHEMA)
     run_migrations(conn)
     conn.commit()
-    return conn
+
+    _conn = conn
+    _conn_path = current_path
+    return _conn
 
 
 def process_scan(
@@ -63,6 +88,7 @@ def process_scan(
     scan_time: datetime | None = None,
     current_versions: dict[tuple[str, str], tuple[str, str]] | None = None,
     running_digests: dict[tuple[str, str], list[str]] | None = None,
+    existing_containers: set[str] | None = None,
 ) -> list[UpdateInfo]:
     """Upsert scan results, resolve or delete absent entries, return updates with status.
 
@@ -82,8 +108,13 @@ def process_scan(
     a digest update entry is resolved if the container's running image already contains
     the stored (new) digest — meaning the user repulled and restarted the container.
 
-    Entries for containers *not* in *current_versions* are left untouched (the
-    container may have been temporarily unreachable).
+    *existing_containers* is the set of container names Docker currently knows about
+    (running *and* stopped).  When provided, active entries whose container name is
+    absent from this set are **deleted** — the container has been removed, so its
+    pending update is no longer relevant and must not keep showing up in the overview.
+
+    Entries for containers that still exist but are *not* in *current_versions* are
+    left untouched (the container may have been temporarily unreachable).
     """
     if scan_time is None:
         scan_time = datetime.now(timezone.utc)
@@ -91,8 +122,8 @@ def process_scan(
         current_versions = {}
 
     ts = scan_time.isoformat()
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _connect()
         # --- upsert current findings ---
         for u in updates:
             conn.execute(
@@ -117,7 +148,6 @@ def process_scan(
             for u in updates
         }
 
-        conn.row_factory = sqlite3.Row
         active_rows = conn.execute(
             "SELECT * FROM updates WHERE resolved_at IS NULL",
         ).fetchall()
@@ -128,6 +158,14 @@ def process_scan(
             key = (row["container_name"], row["image"], row["current_version"], row["update_type"])
             if key in current_keys:
                 continue  # still detected, already upserted
+
+            # Container was removed entirely — forget its pending update so it
+            # stops appearing in the overview.  A removed container differs from a
+            # transiently unreachable one: it is genuinely gone, so the update is
+            # no longer actionable.
+            if existing_containers is not None and row["container_name"] not in existing_containers:
+                conn.execute("DELETE FROM updates WHERE id = ?", (row["id"],))
+                continue
 
             cv_key = (row["container_name"], row["image"])
             if cv_key not in current_versions:
@@ -226,8 +264,6 @@ def process_scan(
             ))
 
         return result
-    finally:
-        conn.close()
 
 
 def mark_notified(updates: list[UpdateInfo], notified_time: datetime | None = None) -> None:
@@ -236,8 +272,8 @@ def mark_notified(updates: list[UpdateInfo], notified_time: datetime | None = No
         notified_time = datetime.now(timezone.utc)
 
     ts = notified_time.isoformat()
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _connect()
         for u in updates:
             conn.execute(
                 """UPDATE updates SET notified_at = ?
@@ -246,28 +282,22 @@ def mark_notified(updates: list[UpdateInfo], notified_time: datetime | None = No
                 (ts, u.container_name, u.image, u.new_version, u.update_type),
             )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def get_active_updates() -> list[dict]:
     """Return all non-resolved update rows as dicts."""
-    conn = _connect()
-    try:
-        conn.row_factory = sqlite3.Row
+    with _conn_lock:
+        conn = _connect()
         rows = conn.execute(
             "SELECT * FROM updates WHERE resolved_at IS NULL ORDER BY first_seen_at"
         ).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def get_all_updates() -> list[dict]:
     """Return all update rows (active and resolved) as dicts with a 'status' field."""
-    conn = _connect()
-    try:
-        conn.row_factory = sqlite3.Row
+    with _conn_lock:
+        conn = _connect()
         rows = conn.execute(
             "SELECT * FROM updates ORDER BY first_seen_at"
         ).fetchall()
@@ -282,33 +312,27 @@ def get_all_updates() -> list[dict]:
                 d["status"] = "new"
             result.append(d)
         return result
-    finally:
-        conn.close()
 
 
 def save_last_check(iso_timestamp: str) -> None:
     """Persist the last scan timestamp to the database."""
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _connect()
         conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_check', ?)",
             (iso_timestamp,),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def load_last_check() -> str | None:
     """Load the persisted last scan timestamp from the database."""
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _connect()
         row = conn.execute(
             "SELECT value FROM metadata WHERE key = 'last_check'"
         ).fetchone()
         return row[0] if row else None
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -317,15 +341,13 @@ def load_last_check() -> str | None:
 
 def get_stored_digest(image: str, tag: str) -> str | None:
     """Return the previously stored digest for (image, tag), or None."""
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _connect()
         row = conn.execute(
             "SELECT digest FROM digests WHERE image = ? AND tag = ?",
             (image, tag),
         ).fetchone()
         return row[0] if row else None
-    finally:
-        conn.close()
 
 
 def store_digest(image: str, tag: str, digest: str, timestamp: datetime | None = None) -> None:
@@ -333,12 +355,10 @@ def store_digest(image: str, tag: str, digest: str, timestamp: datetime | None =
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
     ts = timestamp.isoformat()
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _connect()
         conn.execute(
             "INSERT OR REPLACE INTO digests (image, tag, digest, updated_at) VALUES (?, ?, ?, ?)",
             (image, tag, digest, ts),
         )
         conn.commit()
-    finally:
-        conn.close()

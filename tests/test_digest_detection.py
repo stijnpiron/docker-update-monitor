@@ -7,7 +7,7 @@ import pytest
 
 from app import config as config_mod
 from app.models import UpdateInfo
-from app.scanner import run_check, _resolve_digest_to_tag
+from app.scanner import run_check, _resolve_digest_to_tag, _extract_local_digest
 from app.state import get_stored_digest, store_digest, process_scan, get_active_updates
 
 
@@ -162,6 +162,20 @@ class TestDigestVersionResolution:
             ["edge"],
             r"^(\d+)\.(\d+)\.(\d+)$",
             current_tag="edge",
+        )
+        assert result is None
+
+    @patch("app.scanner.fetch_digest")
+    def test_resolve_digest_excludes_current_tag_from_pattern_matches(self, mock_fetch_digest):
+        """Regression: pattern phase must skip current_tag, mirroring the fallback phase."""
+        mock_fetch_digest.return_value = "sha256:target"
+
+        result = _resolve_digest_to_tag(
+            "myimage",
+            "sha256:target",
+            ["1.2.3"],
+            r"^(\d+)\.(\d+)\.(\d+)$",
+            current_tag="1.2.3",
         )
         assert result is None
 
@@ -447,3 +461,519 @@ class TestDigestFetchFailure:
             run_check()
 
         assert "Could not fetch digest" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Tests for _extract_local_digest helper
+# ---------------------------------------------------------------------------
+
+class TestExtractLocalDigest:
+    def test_standard_format(self):
+        assert _extract_local_digest(["nginx@sha256:abc123"]) == "sha256:abc123"
+
+    def test_registry_prefixed_format(self):
+        assert _extract_local_digest(
+            ["ghcr.io/myorg/myimage@sha256:def456"]
+        ) == "sha256:def456"
+
+    def test_multiple_entries_returns_first(self):
+        result = _extract_local_digest([
+            "nginx@sha256:first111",
+            "docker.io/library/nginx@sha256:second222",
+        ])
+        assert result == "sha256:first111"
+
+    def test_empty_list(self):
+        assert _extract_local_digest([]) is None
+
+    def test_no_at_sign(self):
+        assert _extract_local_digest(["nginx:latest"]) is None
+
+    def test_non_sha256_digest_skipped(self):
+        assert _extract_local_digest(["nginx@md5:abc"]) is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for mode=digest label (explicit digest mode using RepoDigests)
+# ---------------------------------------------------------------------------
+
+class TestDigestModeLabel:
+    """mode=digest label compares local RepoDigests against the remote registry digest."""
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value="sha256:local111")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_digests_match_no_update(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify
+    ):
+        """No update when local RepoDigests matches remote digest."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        container.image.attrs = {"RepoDigests": ["myimage@sha256:local111"], "Os": "", "Architecture": ""}
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        if mock_notify.called:
+            updates_arg = mock_notify.call_args[0][0]
+            digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+            assert len(digest_updates) == 0
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value="sha256:remote222")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_digests_differ_reports_update(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify
+    ):
+        """Update reported on first scan when local digest differs from remote."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:local111"],
+            "Os": "",
+            "Architecture": "",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch("app.scanner.fetch_platform_digest", return_value=None):
+            run_check()
+
+        assert mock_notify.called
+        updates_arg = mock_notify.call_args[0][0]
+        digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+        assert len(digest_updates) == 1
+        assert digest_updates[0].current_version == "latest"
+        assert digest_updates[0].new_version == "sha256:remote222"
+        assert digest_updates[0].image == "myimage"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "1.1.0", "latest"])
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_with_tag_regex_resolves_to_version(
+        self, mock_docker, mock_token, mock_fetch_tags, mock_fetch_digest, mock_notify
+    ):
+        """When tag-regex is also set, the new digest resolves to a versioned tag."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {
+                "docker-update-monitor.mode": "digest",
+                "docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$",
+            },
+        )
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:olddigest000"],
+            "Os": "",
+            "Architecture": "",
+        }
+
+        def digest_side_effect(image, tag, *args, **kwargs):
+            if tag == "latest":
+                return "sha256:newdigest111"
+            if tag == "1.1.0":
+                return "sha256:newdigest111"
+            return "sha256:other"
+
+        mock_fetch_digest.side_effect = digest_side_effect
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch("app.scanner.fetch_platform_digest", return_value=None):
+            run_check()
+
+        assert mock_notify.called
+        updates_arg = mock_notify.call_args[0][0]
+        digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+        assert len(digest_updates) == 1
+        assert digest_updates[0].new_version == "1.1.0"
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value="sha256:remote222")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_no_repo_digests_produces_warning(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify, caplog
+    ):
+        """A warning is produced when RepoDigests is empty."""
+        import logging
+
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        container.image.attrs = {"RepoDigests": [], "Os": "", "Architecture": ""}
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), caplog.at_level(logging.WARNING):
+            run_check()
+
+        assert "No RepoDigests" in caplog.text
+        if mock_notify.called:
+            updates_arg = mock_notify.call_args[0][0]
+            digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+            assert len(digest_updates) == 0
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value=None)
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_remote_digest_fetch_failure_produces_warning(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify, caplog
+    ):
+        """A warning is produced when the remote digest cannot be fetched."""
+        import logging
+
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:local111"],
+            "Os": "",
+            "Architecture": "",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), caplog.at_level(logging.WARNING):
+            run_check()
+
+        assert "Could not fetch remote digest" in caplog.text
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_mode_digest_without_tag_regex(
+        self, mock_docker, mock_token, mock_notify
+    ):
+        """mode=digest works without a tag-regex label."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:local111"],
+            "Os": "",
+            "Architecture": "",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch("app.scanner.fetch_digest", return_value="sha256:local111"):
+            run_check()
+
+        # Digests match — no update expected
+        if mock_notify.called:
+            updates_arg = mock_notify.call_args[0][0]
+            digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+            assert len(digest_updates) == 0
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_multiarch_platform_digest_match_suppresses_update(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify
+    ):
+        """No update when manifest list digest differs but platform digest matches local."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        # Local RepoDigests has the platform-specific digest
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:platform-amd64"],
+            "Os": "linux",
+            "Architecture": "amd64",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        # Remote returns a different manifest list digest (another platform was updated)
+        mock_fetch_digest.return_value = "sha256:new-manifest-list"
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch("app.scanner.fetch_platform_digest", return_value="sha256:platform-amd64"):
+            run_check()
+
+        # Platform-specific digest unchanged → no update
+        if mock_notify.called:
+            updates_arg = mock_notify.call_args[0][0]
+            digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+            assert len(digest_updates) == 0
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_multiarch_platform_digest_changed_reports_update(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify
+    ):
+        """Update reported when the platform-specific digest also changed."""
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:old-platform-amd64"],
+            "Os": "linux",
+            "Architecture": "amd64",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        mock_fetch_digest.return_value = "sha256:new-manifest-list"
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch("app.scanner.fetch_platform_digest", return_value="sha256:new-platform-amd64"):
+            run_check()
+
+        assert mock_notify.called
+        updates_arg = mock_notify.call_args[0][0]
+        digest_updates = [u for u in updates_arg if u.update_type == "digest"]
+        assert len(digest_updates) == 1
+        assert digest_updates[0].new_version == "sha256:new-manifest-list"
+
+
+class TestDigestModeAutoResolveAfterRepull:
+    """mode=digest containers auto-resolve after repull, same as implicit digest mode."""
+
+    @patch("app.scanner.notify")
+    @patch("app.scanner.fetch_digest", return_value="sha256:remote222")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_repulled_container_resolves_pending_update(
+        self, mock_docker, mock_token, mock_fetch_digest, mock_notify
+    ):
+        container = _make_container(
+            "myapp", "myimage:latest",
+            {"docker-update-monitor.mode": "digest"},
+        )
+        # Container now runs the updated image
+        container.image.attrs = {
+            "RepoDigests": ["myimage@sha256:remote222"],
+            "Os": "",
+            "Architecture": "",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+
+        # Pre-create a pending digest update in the DB (simulating prior scan)
+        store_digest("myimage", "latest", "sha256:remote222")
+        process_scan([UpdateInfo(
+            container_name="myapp", service_name="", stack="standalone",
+            image="myimage", current_version="latest",
+            new_version="sha256:remote222", update_type="digest",
+        )])
+        assert len(get_active_updates()) == 1
+
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()
+
+        # Pending update should be resolved
+        assert len(get_active_updates()) == 0
+
+
+class TestFetchPlatformDigest:
+    """Unit tests for the fetch_platform_digest function in manifest.py."""
+
+    def test_returns_platform_specific_digest(self):
+        from app.registry.manifest import _fetch_platform_digest_from_url
+
+        manifest_data = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": [
+                {"digest": "sha256:amd64digest", "platform": {"os": "linux", "architecture": "amd64"}},
+                {"digest": "sha256:arm64digest", "platform": {"os": "linux", "architecture": "arm64"}},
+            ],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = manifest_data
+
+        with patch("app.registry.manifest._http") as mock_http:
+            mock_http.http_session.get.return_value = mock_resp
+            result = _fetch_platform_digest_from_url(
+                "https://example.com/v2/img/manifests/latest",
+                {},
+                "linux", "amd64",
+            )
+
+        assert result == "sha256:amd64digest"
+
+    def test_returns_none_for_missing_platform(self):
+        from app.registry.manifest import _fetch_platform_digest_from_url
+
+        manifest_data = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": [
+                {"digest": "sha256:arm64digest", "platform": {"os": "linux", "architecture": "arm64"}},
+            ],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = manifest_data
+
+        with patch("app.registry.manifest._http") as mock_http:
+            mock_http.http_session.get.return_value = mock_resp
+            result = _fetch_platform_digest_from_url(
+                "https://example.com/v2/img/manifests/latest",
+                {},
+                "linux", "amd64",
+            )
+
+        assert result is None
+
+    def test_returns_none_for_single_arch_image(self):
+        from app.registry.manifest import _fetch_platform_digest_from_url
+
+        manifest_data = {
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "layers": [],
+        }
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = manifest_data
+
+        with patch("app.registry.manifest._http") as mock_http:
+            mock_http.http_session.get.return_value = mock_resp
+            result = _fetch_platform_digest_from_url(
+                "https://example.com/v2/img/manifests/latest",
+                {},
+                "linux", "amd64",
+            )
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Platform digest exception handling — narrowed from broad Exception
+# ---------------------------------------------------------------------------
+
+class TestPlatformDigestExceptionHandling:
+    """Verify that only specific exceptions are caught in the platform digest block."""
+
+    def _setup_digest_mismatch(self, mock_docker, local_digest="sha256:aabbcc", remote_digest="sha256:ddeeff"):
+        """Configure a mock docker client where local != remote digest, triggering platform check."""
+        container = MagicMock()
+        container.name = "myapp"
+        container.labels = {"docker-update-monitor.mode": "digest"}
+        container.image.tags = ["nginx:latest"]
+        container.attrs = {"Config": {"Image": "nginx:latest"}}
+        container.image.attrs = {
+            "RepoDigests": [f"nginx@{local_digest}"],
+            "Os": "linux",
+            "Architecture": "amd64",
+        }
+
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.containers.list.return_value = [container]
+        return container, local_digest, remote_digest
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_requests_exception_is_caught(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """requests.RequestException during platform digest check is caught and logged."""
+        import requests
+
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = requests.ConnectionError("network down")
+
+        with patch("app.scanner.notify") as mock_notify, \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            run_check()
+
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_key_error_is_caught(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """KeyError during platform digest check is caught and logged."""
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = KeyError("missing_key")
+
+        with patch("app.scanner.notify") as mock_notify, \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            run_check()
+
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_docker_api_error_is_caught(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """docker.errors.APIError during platform digest check is caught and logged."""
+        import docker as docker_mod
+
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = docker_mod.errors.APIError("docker error")
+
+        with patch("app.scanner.notify") as mock_notify, \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            run_check()
+
+        mock_notify.assert_called_once()
+
+    @patch("app.scanner.fetch_platform_digest")
+    @patch("app.scanner.fetch_digest")
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
+    @patch("app.scanner.docker")
+    def test_programming_error_propagates(self, mock_docker, _token, mock_fetch_digest, mock_platform_digest):
+        """Programming errors (e.g. AttributeError) must not be swallowed."""
+        container, local, remote = self._setup_digest_mismatch(mock_docker)
+        mock_fetch_digest.return_value = remote
+        mock_platform_digest.side_effect = AttributeError("bad attribute")
+
+        with patch("app.scanner.notify"), \
+             patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             patch.object(config_mod, "DOCKERHUB_USER", ""), \
+             patch.object(config_mod, "DOCKERHUB_PASS", ""):
+            with pytest.raises(AttributeError, match="bad attribute"):
+                run_check()

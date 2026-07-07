@@ -24,6 +24,19 @@ signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
 
 
+def _safe_run_check() -> None:
+    """Run one update check, containing any failure so the scheduler survives.
+
+    An unhandled exception escaping run_check() would crash the process and, in a
+    container, trigger an endless restart loop (issue #163). Instead we log the
+    error and keep the monitor running; the next scheduled scan retries.
+    """
+    try:
+        run_check()
+    except Exception as exc:
+        _config.log.error(f"Update check failed: {exc}", exc_info=True)
+
+
 def main() -> None:
     _config.log.info("Docker Update Monitor started")
     if _config.DRY_RUN:
@@ -49,7 +62,7 @@ def main() -> None:
 
     if _config.RUN_ON_STARTUP:
         _config.log.info("Running initial check on startup")
-        run_check()
+        _safe_run_check()
         if shutdown_requested:
             _config.log.info("Shutting down gracefully")
             sys.exit(0)
@@ -69,7 +82,7 @@ def main() -> None:
             if _scan_trigger.is_set():
                 _scan_trigger.clear()
                 _config.log.info("Manual scan triggered via dashboard")
-                run_check()
+                _safe_run_check()
                 triggered = True
                 if shutdown_requested:
                     break
@@ -91,7 +104,7 @@ def main() -> None:
 
         # Run scheduled check if the sleep loop completed normally (not a manual trigger)
         if not triggered:
-            run_check()
+            _safe_run_check()
 
             if shutdown_requested:
                 break

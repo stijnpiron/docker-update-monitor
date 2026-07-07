@@ -322,3 +322,147 @@ def fetch_digest(
 
     _digest_cache[cache_key] = result
     return result
+
+
+# ---------------------------------------------------------------------------
+# Platform-specific digest fetching (for multi-arch manifest lists)
+# ---------------------------------------------------------------------------
+
+# Cache: (image_name, tag, os, architecture) → digest string or None
+_platform_digest_cache: dict[tuple[str, str, str, str], Optional[str]] = {}
+
+
+def clear_platform_digest_cache() -> None:
+    """Clear the platform digest cache. Used in tests."""
+    _platform_digest_cache.clear()
+
+
+def _fetch_platform_digest_from_url(
+    url: str, auth_headers: dict, os: str, architecture: str
+) -> Optional[str]:
+    """GET the manifest URL and return the digest for the specified platform."""
+    headers = {
+        **auth_headers,
+        "Accept": (
+            "application/vnd.docker.distribution.manifest.list.v2+json,"
+            "application/vnd.oci.image.index.v1+json"
+        ),
+    }
+    try:
+        resp = _http.http_session.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        media_type = data.get("mediaType", "") or ""
+        manifests = None
+        if "manifest.list" in media_type or "image.index" in media_type:
+            manifests = data.get("manifests", [])
+        elif data.get("schemaVersion") == 2 and isinstance(data.get("manifests"), list):
+            manifests = data["manifests"]
+        if not manifests:
+            return None
+        for m in manifests:
+            platform = m.get("platform", {})
+            if platform.get("os") == os and platform.get("architecture") == architecture:
+                return m.get("digest") or None
+        return None
+    except requests.HTTPError as exc:
+        log.warning(f"Platform digest fetch HTTP error ({url}): {exc}")
+        return None
+    except Exception as exc:
+        log.warning(f"Platform digest fetch error ({url}): {exc}")
+        return None
+
+
+def _fetch_dockerhub_platform_digest(
+    image_name: str, tag: str, os: str, architecture: str,
+    username: str, password: str,
+) -> Optional[str]:
+    name = image_name.removeprefix("docker.io/")
+    parts = name.split("/")
+    if len(parts) == 1:
+        name = f"library/{name}"
+
+    scope = f"repository:{name}:pull"
+    token = _get_token(
+        "https://auth.docker.io/token",
+        service="registry.docker.io",
+        scope=scope,
+        username=username,
+        password=password,
+    )
+    if not token:
+        log.warning(f"DockerHub: could not obtain registry token for {name} — skipping platform digest fetch")
+        return None
+
+    url = f"https://registry-1.docker.io/v2/{name}/manifests/{tag}"
+    return _fetch_platform_digest_from_url(url, {"Authorization": f"Bearer {token}"}, os, architecture)
+
+
+def _fetch_ghcr_platform_digest(
+    image_name: str, tag: str, os: str, architecture: str, github_token: str,
+) -> Optional[str]:
+    if not github_token:
+        log.warning(f"GHCR: no GITHUB_TOKEN — skipping platform digest fetch for {image_name}")
+        return None
+
+    image_ref = image_name.strip()
+    parsed = urlparse(image_ref)
+
+    parsed_host = ""
+    if parsed.scheme and parsed.netloc:
+        parsed_host = (parsed.hostname or "").lower()
+    elif "/" in image_ref:
+        parsed_host = image_ref.split("/", 1)[0].lower()
+
+    host = "lscr.io" if parsed_host == "lscr.io" else "ghcr.io"
+    path = image_ref.removeprefix(f"{host}/")
+
+    scope = f"repository:{path}:pull"
+    reg_token = _get_token(
+        f"https://{host}/token",
+        service=host,
+        scope=scope,
+        bearer_token=github_token,
+    )
+    if not reg_token:
+        log.warning(f"GHCR: could not obtain registry token for {path} — skipping platform digest fetch")
+        return None
+
+    url = f"https://{host}/v2/{path}/manifests/{tag}"
+    return _fetch_platform_digest_from_url(url, {"Authorization": f"Bearer {reg_token}"}, os, architecture)
+
+
+def fetch_platform_digest(
+    image_name: str,
+    tag: str,
+    os: str,
+    architecture: str,
+    dockerhub_username: str,
+    dockerhub_password: str,
+    github_token: str,
+) -> Optional[str]:
+    """Return the digest of the platform-specific manifest entry for *os*/*architecture*.
+
+    Returns:
+        str: the digest of the matching platform manifest (e.g. "sha256:abc123...")
+        None: image is single-arch, platform not found in manifest list, or fetch failed.
+
+    Results are cached per (image_name, tag, os, architecture).
+    """
+    cache_key = (image_name, tag, os, architecture)
+    if cache_key in _platform_digest_cache:
+        return _platform_digest_cache[cache_key]
+
+    registry = detect_registry(image_name)
+    if registry == "dockerhub":
+        result = _fetch_dockerhub_platform_digest(
+            image_name, tag, os, architecture, dockerhub_username, dockerhub_password
+        )
+    elif registry == "ghcr":
+        result = _fetch_ghcr_platform_digest(image_name, tag, os, architecture, github_token)
+    else:
+        log.debug(f"Unknown registry for '{image_name}' — skipping platform digest fetch")
+        result = None
+
+    _platform_digest_cache[cache_key] = result
+    return result
