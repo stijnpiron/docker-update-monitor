@@ -59,6 +59,26 @@ class TestMigrations:
         assert "stack" in cols
         conn.close()
 
+    def test_non_unique_index_does_not_trigger_rebuild(self):
+        """A non-unique index covering new_version must not be mistaken for the
+        legacy UNIQUE(new_version) constraint, so no table rebuild is triggered."""
+        conn = self._make_old_db()
+        conn.execute("ALTER TABLE updates ADD COLUMN service_name TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE updates ADD COLUMN stack TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+        # Apply the constraint migration — UNIQUE now on current_version, not new_version.
+        run_migrations(conn)
+        # A plain (non-unique) index that happens to cover new_version.
+        conn.execute("CREATE INDEX idx_new_version ON updates(new_version)")
+        conn.commit()
+
+        # Second pass must skip the non-unique index and leave the table untouched.
+        run_migrations(conn)
+
+        index_names = {row[1] for row in conn.execute("PRAGMA index_list(updates)").fetchall()}
+        assert "idx_new_version" in index_names  # survives → table was not rebuilt
+        conn.close()
+
     def test_migrates_unique_constraint_to_current_version(self):
         """Migration replaces UNIQUE(new_version) with UNIQUE(current_version)."""
         conn = self._make_old_db()

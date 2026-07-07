@@ -233,6 +233,43 @@ class TestEmailNotify:
         assert "3_image_updates" in raw_email  # Q-encoded subject
 
 
+class TestEmailNotifyReturnValue:
+    """email_notify returns True on success, False on failure, None when not attempted."""
+
+    @patch("app.notifications.email.smtplib.SMTP")
+    def test_returns_true_on_success(self, mock_smtp_cls):
+        mock_smtp_cls.return_value = MagicMock()
+        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
+             patch.object(config_mod, "SMTP_PORT", 587), \
+             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
+             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
+             patch.object(config_mod, "SMTP_TLS", False), \
+             patch.object(config_mod, "SMTP_USERNAME", ""), \
+             patch.object(config_mod, "SMTP_PASSWORD", ""):
+            assert email_notify([_make_update()]) is True
+
+    @patch("app.notifications.email.smtplib.SMTP")
+    def test_returns_false_on_smtp_error(self, mock_smtp_cls):
+        mock_smtp_cls.return_value.sendmail.side_effect = Exception("smtp boom")
+        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
+             patch.object(config_mod, "SMTP_PORT", 587), \
+             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
+             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
+             patch.object(config_mod, "SMTP_TLS", False), \
+             patch.object(config_mod, "SMTP_USERNAME", ""), \
+             patch.object(config_mod, "SMTP_PASSWORD", ""):
+            assert email_notify([_make_update()]) is False
+
+    def test_returns_none_when_smtp_unconfigured(self):
+        with patch.object(config_mod, "SMTP_HOST", ""), \
+             patch.object(config_mod, "SMTP_FROM", ""), \
+             patch.object(config_mod, "SMTP_TO", []):
+            assert email_notify([_make_update()]) is None
+
+    def test_returns_none_when_nothing_to_send(self):
+        assert email_notify([]) is None
+
+
 class TestNotifyChannelsDispatch:
     """Tests for the channel dispatcher."""
 

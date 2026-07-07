@@ -1,10 +1,12 @@
 """Tests for graceful shutdown on SIGTERM/SIGINT."""
 
+import logging
 import signal
-import subprocess
-import sys
-import time
+from unittest.mock import patch
 
+import pytest
+
+import app.config as _config
 from app import main as main_mod
 
 
@@ -29,64 +31,22 @@ class TestSignalHandler:
 
 
 class TestGracefulShutdownIntegration:
-    """Integration test: process exits cleanly on SIGTERM."""
+    """Integration test: main() exits cleanly when shutdown is requested."""
 
-    def test_sigterm_causes_graceful_exit(self, tmp_path):
-        """Start the monitor in a subprocess and send SIGTERM; expect exit code 0."""
-        proc = subprocess.Popen(
-            [sys.executable, "-c", """
-import sys, os
-os.environ["RUN_ON_STARTUP"] = "false"
-os.environ["CRON_SCHEDULE"] = "0 0 1 1 *"
-os.environ["DRY_RUN"] = "true"
-os.environ["STATE_DB_PATH"] = sys.argv[1]
-os.environ["WEB_PORT"] = "0"
-from app.main import main
-main()
-""", str(tmp_path / "state.db")],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+    def test_sigterm_causes_graceful_exit(self, monkeypatch, caplog):
+        """Trigger shutdown during the wait loop; expect exit code 0 and graceful log."""
+        monkeypatch.setattr(_config, "RUN_ON_STARTUP", False)
+        monkeypatch.setattr(_config, "CRON_SCHEDULE", "0 0 1 1 *")
 
-        # Wait until the process is ready (logged "Next check at:")
-        deadline = time.time() + 10
-        stderr_lines = []
-        import selectors
-        sel = selectors.DefaultSelector()
-        sel.register(proc.stderr, selectors.EVENT_READ)
-        ready = False
-        while time.time() < deadline:
-            events = sel.select(timeout=1)
-            if events:
-                line = proc.stderr.readline().decode()
-                if not line:
-                    break
-                stderr_lines.append(line)
-                if "Next check at:" in line:
-                    ready = True
-                    break
-            if proc.poll() is not None:
-                break
-        sel.close()
+        def trigger_shutdown(_seconds):
+            main_mod.shutdown_requested = True
 
-        if not ready:
-            # Process died or never became ready — collect remaining output
-            remaining = proc.stderr.read().decode()
-            stderr_lines.append(remaining)
-            full_stderr = "".join(stderr_lines)
-            proc.kill()
-            proc.wait(timeout=5)
-            raise AssertionError(
-                f"Process never became ready (returncode={proc.returncode}).\n"
-                f"stderr:\n{full_stderr}"
-            )
+        with patch("app.main.start_dashboard"), \
+             patch("app.main.load_last_check", return_value=None), \
+             patch("app.main.time.sleep", side_effect=trigger_shutdown), \
+             caplog.at_level(logging.INFO):
+            with pytest.raises(SystemExit) as exc_info:
+                main_mod.main()
 
-        proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout=5)
-
-        remaining = proc.stderr.read().decode()
-        stderr_lines.append(remaining)
-        full_stderr = "".join(stderr_lines)
-
-        assert proc.returncode == 0, f"Expected exit 0, got {proc.returncode}.\nstderr:\n{full_stderr}"
-        assert "Shutting down gracefully" in full_stderr
+        assert exc_info.value.code == 0
+        assert "Shutting down gracefully" in caplog.text

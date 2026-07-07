@@ -1,5 +1,6 @@
 """Tests for webhook authentication support (NOTIFY_AUTH_TYPE / NOTIFY_AUTH_TOKEN)."""
 
+import base64
 from unittest.mock import MagicMock, patch
 
 from app import config as config_mod
@@ -60,10 +61,10 @@ class TestWebhookAuthBearer:
 
 
 class TestWebhookAuthBasic:
-    """Basic authentication."""
+    """Basic authentication — token is supplied as `user:pass` and base64-encoded by the app."""
 
     @patch.object(http_mod, "http_session")
-    def test_basic_auth_sends_authorization_header(self, mock_session):
+    def test_basic_auth_base64_encodes_user_pass(self, mock_session):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
@@ -72,12 +73,52 @@ class TestWebhookAuthBasic:
         with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
              patch.object(config_mod, "DRY_RUN", False), \
              patch.object(config_mod, "NOTIFY_AUTH_TYPE", "basic"), \
-             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", "dXNlcjpwYXNz"):
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", "user:pass"):
             notify([_make_update()])
 
         call_kwargs = mock_session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
         assert headers["Authorization"] == "Basic dXNlcjpwYXNz"
+
+    @patch.object(http_mod, "http_session")
+    def test_basic_auth_encodes_special_characters(self, mock_session):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+
+        token = "admin:p@ss w0rd!"
+        expected = base64.b64encode(token.encode("utf-8")).decode("ascii")
+
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "basic"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", token):
+            notify([_make_update()])
+
+        call_kwargs = mock_session.post.call_args
+        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
+        assert headers["Authorization"] == f"Basic {expected}"
+
+    @patch.object(http_mod, "http_session")
+    def test_basic_auth_encodes_utf8(self, mock_session):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+
+        token = "café:naïve"
+        expected = base64.b64encode(token.encode("utf-8")).decode("ascii")
+
+        with patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
+             patch.object(config_mod, "DRY_RUN", False), \
+             patch.object(config_mod, "NOTIFY_AUTH_TYPE", "basic"), \
+             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", token):
+            notify([_make_update()])
+
+        call_kwargs = mock_session.post.call_args
+        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
+        assert headers["Authorization"] == f"Basic {expected}"
 
 
 class TestWebhookAuthNone:

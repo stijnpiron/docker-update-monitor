@@ -1,5 +1,6 @@
 """Unit tests for app.state — SQLite state persistence."""
 
+import sqlite3
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -146,6 +147,27 @@ class TestResolve:
         assert len(state.get_active_updates()) == 0
         assert len(state.get_all_updates()) == 0
 
+    def test_bad_pattern_in_resolve_is_swallowed(self):
+        """A pattern that raises during parse must not crash the resolve loop.
+
+        A pattern that fullmatches the tag but exposes no capture groups makes
+        parse_tag() raise ValueError. The resolve loop swallows it, leaving the
+        entry unresolved so it is dropped like a superseded version.
+        """
+        u = _make_update(new_version="1.1.0", update_type="minor")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Pattern matches the tag but has zero capture groups → parse_tag raises.
+        cv = {("web", "nginx"): ("1.0.0", r"^\d+\.\d+\.\d+$")}
+        result = state.process_scan([], scan_time=t2, current_versions=cv)
+
+        # Not resolved, and the entry is dropped rather than left dangling.
+        assert [r for r in result if r.status == "resolved"] == []
+        assert len(state.get_active_updates()) == 0
+        assert len(state.get_all_updates()) == 0
+
     def test_delete_when_version_superseded(self):
         """Old entry is deleted when a newer version replaces it."""
         u1 = _make_update(new_version="1.1.0", update_type="minor")
@@ -201,6 +223,102 @@ class TestResolve:
         assert resolved[0].container_name == "web"
         # db entry deleted
         assert len(state.get_all_updates()) == 1
+
+
+class TestRemovedContainer:
+    """Removed containers (fix #165): their pending updates must be dropped."""
+
+    def test_removed_container_update_deleted(self):
+        """An active update is deleted when its container no longer exists."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Container "web" was removed — it isn't in the existing set anymore.
+        result = state.process_scan([], scan_time=t2, existing_containers=set())
+
+        assert result == []
+        assert len(state.get_active_updates()) == 0
+        assert len(state.get_all_updates()) == 0
+
+    def test_present_but_unscanned_container_left_alone(self):
+        """A still-present container that failed to scan keeps its update."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Container still exists but wasn't scanned (not in current_versions) —
+        # e.g. registry was temporarily unreachable. Entry must survive.
+        result = state.process_scan([], scan_time=t2, existing_containers={"web"})
+
+        known = [r for r in result if r.status == "known"]
+        assert len(known) == 1
+        assert len(state.get_active_updates()) == 1
+
+    def test_removed_one_keeps_another(self):
+        """Only the removed container's update is dropped; present ones survive."""
+        u1 = _make_update()  # container "web"
+        u2 = _make_update(container_name="db", image="postgres",
+                          current_version="15.0.0", new_version="15.1.0",
+                          update_type="patch")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u1, u2], scan_time=t1)
+        # "web" removed, "db" still present but unscanned this cycle.
+        result = state.process_scan([], scan_time=t2, existing_containers={"db"})
+
+        remaining = state.get_all_updates()
+        assert len(remaining) == 1
+        assert remaining[0]["container_name"] == "db"
+        assert all(r.container_name != "web" for r in result)
+
+    def test_removed_container_not_notified(self):
+        """A removed container's update is neither resolved nor returned for notification."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        result1 = state.process_scan([u], scan_time=t1)
+        state.mark_notified(result1, notified_time=t1)
+        result = state.process_scan([], scan_time=t2, existing_containers=set())
+
+        # Nothing returned → nothing to notify, and no lingering "resolved" record.
+        assert result == []
+        assert state.get_all_updates() == []
+
+    def test_default_none_preserves_old_behavior(self):
+        """Without existing_containers, absent entries are left untouched."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # No existing_containers passed — cannot tell removed from unreachable.
+        result = state.process_scan([], scan_time=t2)
+
+        known = [r for r in result if r.status == "known"]
+        assert len(known) == 1
+        assert len(state.get_active_updates()) == 1
+
+    def test_present_container_still_resolves(self):
+        """Passing existing_containers does not break normal resolution."""
+        u = _make_update(new_version="1.1.0", update_type="minor")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Container present and updated to 1.1.0 → resolved, not deleted.
+        cv = {("web", "nginx"): ("1.1.0", _PAT)}
+        result = state.process_scan(
+            [], scan_time=t2, current_versions=cv, existing_containers={"web"}
+        )
+
+        resolved = [r for r in result if r.status == "resolved"]
+        assert len(resolved) == 1
+        assert len(state.get_active_updates()) == 0
 
 
 class TestQueryByStatus:
@@ -565,6 +683,40 @@ class TestDigestAutoResolve:
         assert resolved[0].new_version == "1.2.0"
 
 
+class TestStateDbPathResolvedAtCallTime:
+    """Regression tests for #145: STATE_DB_PATH must be resolved on every _connect()."""
+
+    def test_save_last_check_honors_path_set_after_import(self, tmp_path):
+        new_path = tmp_path / "late_bind.db"
+        with patch("app.config.STATE_DB_PATH", str(new_path)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+
+        assert new_path.exists()
+
+    def test_path_change_redirects_reads_and_writes(self, tmp_path):
+        first_path = tmp_path / "first.db"
+        second_path = tmp_path / "second.db"
+
+        with patch("app.config.STATE_DB_PATH", str(first_path)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+
+        with patch("app.config.STATE_DB_PATH", str(second_path)):
+            assert state.load_last_check() is None
+            state.save_last_check("2026-02-02T00:00:00+00:00")
+            assert state.load_last_check() == "2026-02-02T00:00:00+00:00"
+
+        with patch("app.config.STATE_DB_PATH", str(first_path)):
+            assert state.load_last_check() == "2026-01-01T00:00:00+00:00"
+
+    def test_parent_directory_created_at_call_time(self, tmp_path):
+        nested = tmp_path / "nested" / "subdir" / "state.db"
+        with patch("app.config.STATE_DB_PATH", str(nested)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+
+        assert nested.exists()
+        assert nested.parent.is_dir()
+
+
 class TestProcessScanEdgeCases:
     def test_empty_container_name(self):
         """Update with empty container_name is stored and retrieved."""
@@ -583,3 +735,119 @@ class TestProcessScanEdgeCases:
         result = state.process_scan([u], scan_time=t)
         assert len(result) == 1
         assert result[0].image == ""
+
+
+class TestConnectionCaching:
+    """Regression tests for #146: connection + schema + migrations reused across calls."""
+
+    def test_schema_and_migrations_run_once_for_repeated_calls(self):
+        """run_migrations is invoked at most once across many state operations."""
+        u = _make_update()
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        with patch("app.state.run_migrations", wraps=state.run_migrations) as spy:
+            state.process_scan([u], scan_time=t)
+            state.get_active_updates()
+            state.get_all_updates()
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+            state.load_last_check()
+            state.store_digest("nginx", "latest", "sha256:abc")
+            state.get_stored_digest("nginx", "latest")
+            state.mark_notified([u], notified_time=t)
+            state.process_scan([u], scan_time=t)
+
+        assert spy.call_count == 1
+
+    def test_connection_is_reused_across_calls(self):
+        """All state operations share the same sqlite3 connection object."""
+        state.save_last_check("2026-01-01T00:00:00+00:00")
+        first = state._conn
+        assert first is not None
+
+        state.load_last_check()
+        state.get_active_updates()
+        state.get_all_updates()
+        state.store_digest("nginx", "latest", "sha256:abc")
+        state.get_stored_digest("nginx", "latest")
+
+        assert state._conn is first
+
+    def test_path_change_closes_and_replaces_connection(self, tmp_path):
+        """Switching STATE_DB_PATH closes the old connection and opens a new one."""
+        first_path = tmp_path / "first.db"
+        second_path = tmp_path / "second.db"
+
+        with patch("app.config.STATE_DB_PATH", str(first_path)):
+            state.save_last_check("2026-01-01T00:00:00+00:00")
+            first_conn = state._conn
+            assert state._conn_path == str(first_path)
+
+        with patch("app.config.STATE_DB_PATH", str(second_path)):
+            state.save_last_check("2026-02-02T00:00:00+00:00")
+            assert state._conn is not first_conn
+            assert state._conn_path == str(second_path)
+
+        # The first connection was closed when we switched paths.
+        with pytest.raises(sqlite3.ProgrammingError):
+            first_conn.execute("SELECT 1")
+
+    def test_concurrent_access_is_thread_safe(self):
+        """Many threads hammering state functions in parallel do not corrupt state."""
+        import threading
+
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        errors: list[BaseException] = []
+
+        def worker(idx: int) -> None:
+            try:
+                u = _make_update(
+                    container_name=f"c{idx}",
+                    image=f"img{idx}",
+                    new_version=f"1.{idx}.0",
+                )
+                for _ in range(5):
+                    state.process_scan([u], scan_time=t0)
+                    state.save_last_check(t0.isoformat())
+                    state.load_last_check()
+                    state.store_digest(f"img{idx}", "latest", f"sha256:{idx}")
+                    state.get_stored_digest(f"img{idx}", "latest")
+                    state.get_active_updates()
+                    state.get_all_updates()
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        assert errors == []
+        # One row per worker survived the concurrent writes.
+        active = state.get_active_updates()
+        assert len(active) == 8
+        assert {row["container_name"] for row in active} == {f"c{i}" for i in range(8)}
+
+    def test_connection_uses_check_same_thread_false(self):
+        """Cached connection must allow cross-thread reuse."""
+        import threading
+
+        state.save_last_check("2026-01-01T00:00:00+00:00")
+        conn = state._conn
+        assert conn is not None
+
+        errors: list[BaseException] = []
+
+        def use_from_other_thread() -> None:
+            try:
+                state.load_last_check()
+            except BaseException as exc:
+                errors.append(exc)
+
+        th = threading.Thread(target=use_from_other_thread)
+        th.start()
+        th.join()
+
+        assert errors == []
+        # Cached connection wasn't swapped out — it really was reused cross-thread.
+        assert state._conn is conn
