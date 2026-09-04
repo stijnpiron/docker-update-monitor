@@ -1,5 +1,11 @@
 import os
+import re
+import sys
 import logging
+
+from datetime import timedelta
+
+from app.cooldown import parse_cooldown
 
 LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -49,3 +55,92 @@ DASHBOARD_DATETIME_FORMAT = os.environ.get("DASHBOARD_DATETIME_FORMAT", "%d/%m/%
 TZ                = os.environ.get("TZ", "")
 
 UPDATE_COOLDOWN   = os.environ.get("UPDATE_COOLDOWN", "0")
+
+# Valid host names: alphanumeric plus dot, underscore, and hyphen.
+_HOST_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+_DEFAULT_HOST_REACH_COOLDOWN = "1h"
+
+
+def _parse_host_reach_cooldown() -> timedelta:
+    """Parse ``HOST_REACH_COOLDOWN`` into a timedelta.
+
+    Unset values keep the default; *invalid* values (parse errors) fall back
+    to the default with a warning, mirroring the ``_int_env`` pattern so a bad
+    value never prevents startup.
+    """
+    raw = os.environ.get("HOST_REACH_COOLDOWN")
+    if raw is None or raw.strip() == "":
+        return parse_cooldown(_DEFAULT_HOST_REACH_COOLDOWN)
+    try:
+        return parse_cooldown(raw)
+    except ValueError:
+        log.warning(
+            "Invalid HOST_REACH_COOLDOWN value %r, falling back to %s",
+            raw, _DEFAULT_HOST_REACH_COOLDOWN,
+        )
+        return parse_cooldown(_DEFAULT_HOST_REACH_COOLDOWN)
+
+
+def _fail_host_config(message: str) -> None:
+    """Log a config validation error and exit, matching invalid-CRON behavior."""
+    log.error(f"Invalid DOCKER_HOSTS configuration — {message} — exiting")
+    sys.exit(1)
+
+
+def _parse_docker_hosts() -> list[tuple[str, str | None]]:
+    """Parse the ``DOCKER_HOSTS`` env var into ordered ``(name, url)`` tuples.
+
+    ``local`` (url ``None``) is always first; every remote host is
+    ``ssh://…``. Exits with a clear message on any validation failure rather
+    than silently dropping a bad value.
+    """
+    hosts: list[tuple[str, str | None]] = [("local", None)]
+    raw = os.environ.get("DOCKER_HOSTS")
+    if raw is None or raw.strip() == "":
+        return hosts
+
+    for segment in raw.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        if "=" not in segment:
+            _fail_host_config(
+                f"host entry {segment!r} is missing '=' (expected name=ssh://…)"
+            )
+
+        name, _, url = segment.partition("=")
+        name = name.strip()
+        url = url.strip()
+
+        if not name:
+            _fail_host_config(f"host entry {segment!r} has an empty name")
+
+        if name == "local":
+            _fail_host_config(
+                f"host entry {segment!r} uses the reserved name 'local'"
+            )
+
+        if not _HOST_NAME_RE.match(name):
+            _fail_host_config(
+                f"host name {name!r} contains invalid characters "
+                "(allowed: A-Za-z0-9 . _ -)"
+            )
+
+        if not url.startswith("ssh://"):
+            _fail_host_config(
+                f"host {name!r} has docker_host_url {url!r} but only the "
+                "ssh:// scheme is supported"
+            )
+
+        hosts.append((name, url))
+
+    if len({h[0] for h in hosts}) != len(hosts):
+        _fail_host_config("duplicate host name in DOCKER_HOSTS")
+
+    return hosts
+
+
+DOCKER_HOSTS          = _parse_docker_hosts()
+HOST_REACH_COOLDOWN   = _parse_host_reach_cooldown()

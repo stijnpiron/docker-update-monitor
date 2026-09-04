@@ -851,3 +851,143 @@ class TestConnectionCaching:
         assert errors == []
         # Cached connection wasn't swapped out — it really was reused cross-thread.
         assert state._conn is conn
+
+
+class TestHostScope:
+    """Task 03: containers that collide across hosts must be fully isolated."""
+
+    def test_process_scan_different_hosts_do_not_collide(self):
+        """Same container/image/version/type on two hosts persist as separate rows."""
+        u_prod = _make_update(host="prod")
+        u_staging = _make_update(host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        state.process_scan([u_prod], scan_time=t1, host="prod")
+        state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        active = state.get_active_updates()
+        assert len(active) == 2
+        hosts = {row["host"] for row in active}
+        assert hosts == {"prod", "staging"}
+
+    def test_process_scan_same_host_dedups_as_before(self):
+        """Repeated scans on the same host upsert a single row."""
+        u = _make_update(host="prod")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1, host="prod")
+        result = state.process_scan([u], scan_time=t2, host="prod")
+
+        assert len(result) == 1
+        assert result[0].status == "known"
+        assert len(state.get_active_updates()) == 1
+        assert result[0].host == "prod"
+
+    def test_process_scan_scope_isolated_per_host(self):
+        """process_scan(host=X) only returns rows for host X."""
+        u_prod = _make_update(container_name="web", host="prod")
+        u_staging = _make_update(container_name="web", host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        state.process_scan([u_prod], scan_time=t1, host="prod")
+        result = state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        # The result of the staging scan is only staging's row.
+        assert [r.host for r in result] == ["staging"]
+
+    def test_process_scan_removed_container_is_host_scoped(self):
+        """nginx removed on prod must not shield a same-named container on staging."""
+        u_prod = _make_update(container_name="nginx", host="prod")
+        u_staging = _make_update(container_name="nginx", host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u_prod], scan_time=t1, host="prod")
+        state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        # nginx is gone on prod (empty existing set) but still present on staging.
+        state.process_scan([], scan_time=t2, host="prod", existing_containers=set())
+        state.process_scan([], scan_time=t2, host="staging", existing_containers={"nginx"})
+
+        remaining = state.get_all_updates()
+        assert len(remaining) == 1
+        assert remaining[0]["host"] == "staging"
+        assert remaining[0]["container_name"] == "nginx"
+
+    def test_mark_notified_is_host_scoped(self):
+        """mark_notified only touches the matching host's row."""
+        u_prod = _make_update(container_name="web", host="prod")
+        u_staging = _make_update(container_name="web", host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        res_prod = state.process_scan([u_prod], scan_time=t1, host="prod")
+        res_staging = state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        state.mark_notified(res_prod, notified_time=t1)
+
+        rows = {row["host"]: row for row in state.get_active_updates()}
+        assert rows["prod"]["notified_at"] == t1.isoformat()
+        assert rows["staging"]["notified_at"] is None
+
+    def test_process_scan_defaults_to_local(self):
+        """Omitting host keeps backward compatibility (rows land under 'local')."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        result = state.process_scan([u], scan_time=t1)
+
+        assert result[0].host == "local"
+        assert state.get_active_updates()[0]["host"] == "local"
+
+
+class TestHostStatus:
+    def test_upsert_and_get_host_status_round_trips(self):
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("staging", False, "connection refused", "2026-01-01T00:00:00+00:00")
+
+        rows = {row["host"]: row for row in state.get_host_status()}
+        assert rows["prod"]["reachable"] == 1
+        assert rows["prod"]["error"] is None
+        assert rows["staging"]["reachable"] == 0
+        assert rows["staging"]["error"] == "connection refused"
+
+    def test_upsert_host_status_updates_existing_row(self):
+        state.upsert_host_status("prod", False, "timeout", "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("prod", True, None, "2026-01-02T00:00:00+00:00")
+
+        rows = state.get_host_status()
+        assert len(rows) == 1
+        assert rows[0]["reachable"] == 1
+        assert rows[0]["error"] is None
+        assert rows[0]["checked_at"] == "2026-01-02T00:00:00+00:00"
+
+    def test_get_host_status_empty(self):
+        assert state.get_host_status() == []
+
+
+class TestEventCooldowns:
+    def test_get_event_last_fired_defaults_none_then_set(self):
+        assert state.get_event_last_fired("host:prod") is None
+        state.set_event_last_fired("host:prod", "2026-01-01T00:00:00+00:00")
+        assert state.get_event_last_fired("host:prod") == "2026-01-01T00:00:00+00:00"
+
+    def test_set_event_last_fired_updates_existing(self):
+        state.set_event_last_fired("host:prod", "2026-01-01T00:00:00+00:00")
+        state.set_event_last_fired("host:prod", "2026-01-02T00:00:00+00:00")
+        assert state.get_event_last_fired("host:prod") == "2026-01-02T00:00:00+00:00"
+
+    def test_event_last_fired_is_key_scoped(self):
+        state.set_event_last_fired("host:a", "2026-01-01T00:00:00+00:00")
+        assert state.get_event_last_fired("host:b") is None
+        assert state.get_event_last_fired("host:a") == "2026-01-01T00:00:00+00:00"
+
+
+class TestDigestsSchemaUnchanged:
+    def test_digests_schema_unchanged(self):
+        """Task 03 AC6: the digests table has no host column and keeps its PK."""
+        rows = state.get_stored_digest("nginx", "latest")  # ensures _connect runs
+        assert rows is None
+        cols = {r[1] for r in state._conn.execute("PRAGMA table_info(digests)").fetchall()}
+        assert cols == {"image", "tag", "digest", "updated_at"}
+        assert "host" not in cols

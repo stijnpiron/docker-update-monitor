@@ -23,7 +23,24 @@ CREATE TABLE IF NOT EXISTS updates (
     last_seen_at TEXT NOT NULL,
     notified_at TEXT,
     resolved_at TEXT,
-    UNIQUE(container_name, image, current_version, update_type)
+    host TEXT NOT NULL DEFAULT 'local',
+    UNIQUE(host, container_name, image, current_version, update_type)
+);
+"""
+
+_HOST_STATUS_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS host_status (
+    host TEXT PRIMARY KEY,
+    reachable INTEGER NOT NULL,
+    error TEXT,
+    checked_at TEXT
+);
+"""
+
+_EVENT_COOLDOWNS_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS event_cooldowns (
+    key TEXT PRIMARY KEY,
+    last_fired_at TEXT
 );
 """
 
@@ -75,6 +92,8 @@ def _connect() -> sqlite3.Connection:
     conn.execute(_SCHEMA)
     conn.execute(_DIGESTS_SCHEMA)
     conn.execute(_METADATA_SCHEMA)
+    conn.execute(_HOST_STATUS_SCHEMA)
+    conn.execute(_EVENT_COOLDOWNS_SCHEMA)
     run_migrations(conn)
     conn.commit()
 
@@ -89,6 +108,7 @@ def process_scan(
     current_versions: dict[tuple[str, str], tuple[str, str]] | None = None,
     running_digests: dict[tuple[str, str], list[str]] | None = None,
     existing_containers: set[str] | None = None,
+    host: str = "local",
 ) -> list[UpdateInfo]:
     """Upsert scan results, resolve or delete absent entries, return updates with status.
 
@@ -128,9 +148,9 @@ def process_scan(
         for u in updates:
             conn.execute(
                 """INSERT INTO updates (container_name, service_name, image, current_version, new_version,
-                                        update_type, stack, first_seen_at, last_seen_at, resolved_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                   ON CONFLICT(container_name, image, current_version, update_type) DO UPDATE SET
+                                        update_type, stack, first_seen_at, last_seen_at, resolved_at, host)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                   ON CONFLICT(host, container_name, image, current_version, update_type) DO UPDATE SET
                        new_version = excluded.new_version,
                        last_seen_at = excluded.last_seen_at,
                        service_name = excluded.service_name,
@@ -139,23 +159,24 @@ def process_scan(
                        notified_at = CASE WHEN excluded.new_version != updates.new_version THEN NULL ELSE updates.notified_at END,
                        first_seen_at = CASE WHEN excluded.new_version != updates.new_version THEN excluded.first_seen_at ELSE updates.first_seen_at END""",
                 (u.container_name, u.service_name, u.image, u.current_version, u.new_version,
-                 u.update_type, u.stack, ts, ts),
+                 u.update_type, u.stack, ts, ts, host),
             )
 
         # --- resolve or delete absent entries ---
         current_keys = {
-            (u.container_name, u.image, u.current_version, u.update_type)
+            (host, u.container_name, u.image, u.current_version, u.update_type)
             for u in updates
         }
 
         active_rows = conn.execute(
-            "SELECT * FROM updates WHERE resolved_at IS NULL",
+            "SELECT * FROM updates WHERE resolved_at IS NULL AND host = ?",
+            (host,),
         ).fetchall()
 
         resolved_ids: list[int] = []
 
         for row in active_rows:
-            key = (row["container_name"], row["image"], row["current_version"], row["update_type"])
+            key = (row["host"], row["container_name"], row["image"], row["current_version"], row["update_type"])
             if key in current_keys:
                 continue  # still detected, already upserted
 
@@ -224,14 +245,15 @@ def process_scan(
         if resolved_ids:
             ph = ",".join("?" * len(resolved_ids))
             resolved_rows = conn.execute(
-                f"SELECT * FROM updates WHERE id IN ({ph}) ORDER BY first_seen_at",
-                resolved_ids,
+                f"SELECT * FROM updates WHERE id IN ({ph}) AND host = ? ORDER BY first_seen_at",
+                [*resolved_ids, host],
             ).fetchall()
         else:
             resolved_rows = []
 
         active_rows = conn.execute(
-            "SELECT * FROM updates WHERE resolved_at IS NULL ORDER BY first_seen_at",
+            "SELECT * FROM updates WHERE resolved_at IS NULL AND host = ? ORDER BY first_seen_at",
+            (host,),
         ).fetchall()
 
         result: list[UpdateInfo] = []
@@ -246,6 +268,7 @@ def process_scan(
                 current_version=row["current_version"],
                 new_version=row["new_version"],
                 update_type=row["update_type"],
+                host=row["host"],
                 status=status,
                 first_seen_at=row["first_seen_at"],
             ))
@@ -259,6 +282,7 @@ def process_scan(
                 current_version=row["current_version"],
                 new_version=row["new_version"],
                 update_type=row["update_type"],
+                host=row["host"],
                 status="resolved",
                 first_seen_at=row["first_seen_at"],
             ))
@@ -267,7 +291,11 @@ def process_scan(
 
 
 def mark_notified(updates: list[UpdateInfo], notified_time: datetime | None = None) -> None:
-    """Set notified_at for the given updates."""
+    """Set notified_at for the given updates.
+
+    Each update's own ``host`` is used in the WHERE clause so that same-named
+    containers on different hosts are never cross-notified.
+    """
     if notified_time is None:
         notified_time = datetime.now(timezone.utc)
 
@@ -277,9 +305,9 @@ def mark_notified(updates: list[UpdateInfo], notified_time: datetime | None = No
         for u in updates:
             conn.execute(
                 """UPDATE updates SET notified_at = ?
-                   WHERE container_name = ? AND image = ? AND new_version = ? AND update_type = ?
+                   WHERE host = ? AND container_name = ? AND image = ? AND new_version = ? AND update_type = ?
                      AND notified_at IS NULL""",
-                (ts, u.container_name, u.image, u.new_version, u.update_type),
+                (ts, u.host, u.container_name, u.image, u.new_version, u.update_type),
             )
         conn.commit()
 
@@ -360,5 +388,61 @@ def store_digest(image: str, tag: str, digest: str, timestamp: datetime | None =
         conn.execute(
             "INSERT OR REPLACE INTO digests (image, tag, digest, updated_at) VALUES (?, ?, ?, ?)",
             (image, tag, digest, ts),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Host reachability
+# ---------------------------------------------------------------------------
+
+def upsert_host_status(host: str, reachable: bool, error: str | None, checked_at: str) -> None:
+    """Record the latest reachability snapshot for a host (one row per host)."""
+    with _conn_lock:
+        conn = _connect()
+        conn.execute(
+            """INSERT INTO host_status (host, reachable, error, checked_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(host) DO UPDATE SET
+                   reachable = excluded.reachable,
+                   error = excluded.error,
+                   checked_at = excluded.checked_at""",
+            (host, int(reachable), error, checked_at),
+        )
+        conn.commit()
+
+
+def get_host_status() -> list[dict]:
+    """Return reachability snapshots for every host as a list of dicts."""
+    with _conn_lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT host, reachable, error, checked_at FROM host_status ORDER BY host"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Event cooldowns
+# ---------------------------------------------------------------------------
+
+def get_event_last_fired(key: str) -> str | None:
+    """Return the last time the event identified by *key* fired, or None."""
+    with _conn_lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT last_fired_at FROM event_cooldowns WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+
+def set_event_last_fired(key: str, last_fired_at: str) -> None:
+    """Record that the event identified by *key* fired at *last_fired_at*."""
+    with _conn_lock:
+        conn = _connect()
+        conn.execute(
+            """INSERT INTO event_cooldowns (key, last_fired_at) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET last_fired_at = excluded.last_fired_at""",
+            (key, last_fired_at),
         )
         conn.commit()
