@@ -1,8 +1,11 @@
 import app.config as _config
-from app.models import UpdateInfo, RegexMismatch, ScanWarning
+from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatusEvent
 from app.notifications.webhook import notify as webhook_notify
 from app.notifications.email import notify as email_notify
+from app.notifications.host_status import notify_host_status
 from app.metrics import notifications_attempted_total, notifications_sent_total
+
+__all__ = ["dispatch", "notify_host_status", "HostStatusEvent"]
 
 
 def _record(channel: str, result: bool | None) -> None:

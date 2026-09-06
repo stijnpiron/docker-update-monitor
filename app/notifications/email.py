@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from html import escape
 
 import app.config as _config
-from app.models import UpdateInfo, RegexMismatch, ScanWarning
+from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatusEvent
 
 _TYPE_COLORS = {"major": "#dc2626", "minor": "#d97706", "patch": "#2563eb"}
 _TD = "padding:6px 12px;border-bottom:1px solid #e5e7eb;"
@@ -25,7 +25,8 @@ def _split_by_status(updates: list[UpdateInfo]) -> tuple[list[UpdateInfo], list[
 
 
 def _sort_updates(updates: list[UpdateInfo]) -> list[UpdateInfo]:
-    return sorted(updates, key=lambda u: (u.stack or "", u.image or ""))
+    # Rows group visually by host first (task 05), then stack, then image.
+    return sorted(updates, key=lambda u: (u.host or "", u.stack or "", u.image or ""))
 
 
 def _build_rows(updates: list[UpdateInfo]) -> str:
@@ -34,6 +35,7 @@ def _build_rows(updates: list[UpdateInfo]) -> str:
         color = _TYPE_COLORS.get(u.update_type, "#6b7280")
         rows += (
             f'<tr>'
+            f'<td style="{_TD}">{escape(u.host)}</td>'
             f'<td style="{_TD}font-weight:bold;">{escape(u.stack)}</td>'
             f'<td style="{_TD}">{escape(u.service_name or u.container_name)}</td>'
             f'<td style="{_TD}">{escape(u.container_name)}</td>'
@@ -53,6 +55,7 @@ def _build_section(title: str, emoji: str, updates: list[UpdateInfo], header_col
         f'<h3 style="color:{header_color};margin:20px 0 8px 0;">{emoji} {title} ({len(updates)})</h3>'
         f'<table style="border-collapse:collapse;width:100%;">'
         f'<thead><tr style="background:#f3f4f6;">'
+        f'<th style="padding:6px 12px;text-align:left;">Host</th>'
         f'<th style="padding:6px 12px;text-align:left;">Stack</th>'
         f'<th style="padding:6px 12px;text-align:left;">Service</th>'
         f'<th style="padding:6px 12px;text-align:left;">Container</th>'
@@ -73,6 +76,7 @@ def _build_mismatch_section_html(mismatches: list[RegexMismatch]) -> str:
     for m in mismatches:
         rows += (
             f'<tr>'
+            f'<td style="{_TD}">{escape(m.host)}</td>'
             f'<td style="{_TD}font-weight:bold;">{escape(m.stack)}</td>'
             f'<td style="{_TD}">{escape(m.service_name or m.container_name)}</td>'
             f'<td style="{_TD}">{escape(m.container_name)}</td>'
@@ -87,6 +91,7 @@ def _build_mismatch_section_html(mismatches: list[RegexMismatch]) -> str:
         f'These containers have a tag-regex that does not match their current tag. Check your configuration.</p>'
         f'<table style="border-collapse:collapse;width:100%;">'
         f'<thead><tr style="background:#f3f4f6;">'
+        f'<th style="padding:6px 12px;text-align:left;">Host</th>'
         f'<th style="padding:6px 12px;text-align:left;">Stack</th>'
         f'<th style="padding:6px 12px;text-align:left;">Service</th>'
         f'<th style="padding:6px 12px;text-align:left;">Container</th>'
@@ -108,6 +113,7 @@ def _build_warnings_section_html(warnings: list[ScanWarning]) -> str:
         rows += (
             f'<tr>'
             f'<td style="{_TD}color:{color};font-weight:bold;">{escape(w.level.upper())}</td>'
+            f'<td style="{_TD}">{escape(w.host)}</td>'
             f'<td style="{_TD}">{escape(w.container_name)}</td>'
             f'<td style="{_TD}">{escape(w.image or "\u2014")}</td>'
             f'<td style="{_TD}">{escape(w.message)}</td>'
@@ -118,6 +124,7 @@ def _build_warnings_section_html(warnings: list[ScanWarning]) -> str:
         f'<table style="border-collapse:collapse;width:100%;">'
         f'<thead><tr style="background:#f3f4f6;">'
         f'<th style="padding:6px 12px;text-align:left;">Level</th>'
+        f'<th style="padding:6px 12px;text-align:left;">Host</th>'
         f'<th style="padding:6px 12px;text-align:left;">Container</th>'
         f'<th style="padding:6px 12px;text-align:left;">Image</th>'
         f'<th style="padding:6px 12px;text-align:left;">Message</th>'
@@ -166,7 +173,7 @@ def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | No
         lines.append("-" * 30)
         for u in group:
             lines.append(
-                f"  [{u.stack}] {u.service_name or u.container_name} ({u.container_name}) "
+                f"  [{u.host}] [{u.stack}] {u.service_name or u.container_name} ({u.container_name}) "
                 f"{u.image} {u.current_version} -> {u.new_version} ({u.update_type})"
             )
         lines.append("")
@@ -176,7 +183,7 @@ def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | No
         lines.append("-" * 30)
         for m in mismatches:
             lines.append(
-                f"  [{m.stack}] {m.service_name or m.container_name} ({m.container_name}) "
+                f"  [{m.host}] [{m.stack}] {m.service_name or m.container_name} ({m.container_name}) "
                 f"{m.image}:{m.current_tag}  pattern='{m.pattern}'"
             )
         lines.append("")
@@ -186,7 +193,7 @@ def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | No
         lines.append("-" * 30)
         for w in warnings:
             image_part = f" {w.image}" if w.image else ""
-            lines.append(f"  [{w.level.upper()}] {w.container_name}{image_part}: {w.message}")
+            lines.append(f"  [{w.host}] [{w.level.upper()}] {w.container_name}{image_part}: {w.message}")
         lines.append("")
 
     return "\n".join(lines)
@@ -245,4 +252,93 @@ def notify(
         return False
 
     _config.log.info(f"Email sent to {', '.join(_config.SMTP_TO)} with {len(updates)} update(s)")
+    return True
+
+
+def _event_text(event: HostStatusEvent) -> str:
+    """Human-readable one-line summary of a single host up/down event."""
+    if event.event == "recovered":
+        return f"Host recovered: {event.host}"
+    error = event.error or "unreachable"
+    return f"Host unreachable: {event.host} — {error}"
+
+
+def _build_host_status_bodies(event: HostStatusEvent) -> tuple[str, str, str]:
+    """Build (subject, plain body, HTML body) for one host up/down event."""
+    text = _event_text(event)
+    if event.event == "recovered":
+        emoji = "\u2705"
+        color = "#16a34a"
+    else:
+        emoji = "\U0001f6a8"
+        color = "#dc2626"
+
+    subject = f"{emoji} Docker Update Monitor \u2013 {text}"
+
+    plain = (
+        "Docker Update Monitor\n"
+        + "=" * 40
+        + "\n\n"
+        + text
+        + "\n"
+    )
+
+    html = (
+        '<html><body style="font-family:sans-serif;color:#111;">'
+        f'<h2 style="color:{color};margin:0 0 12px 0;">{emoji} {escape(text)}</h2>'
+        '<p style="color:#6b7280;font-size:12px;margin:16px 0 0 0;">'
+        'Sent by Docker Update Monitor'
+        '</p>'
+        '</body></html>'
+    )
+    return subject, plain, html
+
+
+def host_updown(event: HostStatusEvent) -> bool | None:
+    """Send a host down/recovered email alert (task 05).
+
+    Mirrors :func:`notify` return semantics:
+
+    * ``None`` — no SMTP delivery was attempted (DRY_RUN, or incomplete SMTP
+      configuration). The message is still logged in DRY_RUN mode.
+    * ``False`` — a delivery attempt was made but failed (e.g. SMTP error).
+    * ``True``  — the message was sent successfully.
+    """
+    if _config.DRY_RUN:
+        _config.log.info("DRY_RUN — would send host-status email: " + _event_text(event))
+        return None
+
+    if not _config.SMTP_HOST or not _config.SMTP_FROM or not _config.SMTP_TO:
+        _config.log.warning("SMTP not fully configured (SMTP_HOST, SMTP_FROM, SMTP_TO required) — skipping host-status notification.")
+        return None
+
+    subject, plain_body, html_body = _build_host_status_bodies(event)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = _config.SMTP_FROM
+    msg["To"] = ", ".join(_config.SMTP_TO)
+
+    msg.attach(MIMEText(plain_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        if _config.SMTP_PORT == 465:
+            # Port 465: implicit SSL (SMTPS)
+            server = smtplib.SMTP_SSL(_config.SMTP_HOST, _config.SMTP_PORT)
+        else:
+            # Port 587 or other: plain connect, then optional STARTTLS
+            server = smtplib.SMTP(_config.SMTP_HOST, _config.SMTP_PORT)
+            if _config.SMTP_TLS:
+                server.starttls()
+
+        with server:
+            if _config.SMTP_USERNAME and _config.SMTP_PASSWORD:
+                server.login(_config.SMTP_USERNAME, _config.SMTP_PASSWORD)
+            server.sendmail(_config.SMTP_FROM, _config.SMTP_TO, msg.as_string())
+    except Exception as exc:
+        _config.log.error(f"Failed to send host-status email notification: {exc}")
+        return False
+
+    _config.log.info(f"Host-status email sent to {', '.join(_config.SMTP_TO)}: {_event_text(event)}")
     return True

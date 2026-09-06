@@ -27,6 +27,20 @@ class HostStatus:
 
 
 @dataclass
+class HostStatusEvent:
+    """A host reachability transition detected between two scan cycles.
+
+    Not an ``UpdateInfo`` — host up/down alerts are not container update
+    rows, so they travel through the dedicated ``notify_host_status``
+    dispatch path (task 05).
+    """
+    host: str
+    event: str              # "down" | "recovered"
+    # Populated only for "down" events (by convention, not the type).
+    error: str | None = None
+
+
+@dataclass
 class RegexMismatch:
     container_name: str
     service_name: str

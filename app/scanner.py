@@ -11,12 +11,13 @@ from docker.errors import APIError as DockerAPIError, DockerException
 
 import app.config as _config
 from app.cooldown import parse_cooldown
-from app.models import UpdateInfo, RegexMismatch, ScanWarning
+from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatusEvent
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
 from app.registry.manifest import fetch_manifest_list, is_platform_supported, fetch_digest, fetch_platform_digest
 from app.version import find_updates
 from app.notifications import dispatch as notify
+from app.notifications.host_status import notify_host_status
 from app.state import (
     process_scan, mark_notified, get_stored_digest, store_digest, get_all_updates,
     get_host_status, upsert_host_status,
@@ -105,6 +106,9 @@ _HOST_CLIENT_TIMEOUT = 30
 # Last-seen reachability per host, carried across scans so that down/up
 # transitions can be detected (task 05 raises the up/down alerts from this).
 _last_host_reachable: dict[str, bool] = {}
+# Last error string for each host, so a freshly-detected down event can carry
+# the reason into its HostStatusEvent.
+_last_host_errors: dict[str, str] = {}
 
 
 @dataclass
@@ -552,13 +556,43 @@ def _record_host_reachable(host: str) -> None:
     """Record *host* as reachable and note the transition in memory."""
     upsert_host_status(host, True, None, datetime.now(timezone.utc).isoformat())
     _last_host_reachable[host] = True
+    _last_host_errors.pop(host, None)
 
 
 def _record_host_unreachable(host: str, error: str) -> None:
     """Record *host* as unreachable and note the transition in memory."""
     upsert_host_status(host, False, error, datetime.now(timezone.utc).isoformat())
     _last_host_reachable[host] = False
+    _last_host_errors[host] = error
     check_errors_total.inc()
+
+
+def _detect_host_events(before: dict[str, bool], after: dict[str, bool]) -> list[HostStatusEvent]:
+    """Compare per-host reachability before/after a scan and return transitions.
+
+    * ``down``      — a host that was reachable on the previous scan is now
+      unreachable (``True → False``).
+    * ``recovered`` — a host that was unreachable on the previous scan is now
+      reachable (``False → True``).
+
+    A host whose *prior* state is missing (``None``) is never turned into an
+    event: this is the first-scan priming rule — on the very first scan (or the
+    first scan after a host is added) there is no baseline to compare against,
+    so nothing is alerted (design doc "Edge cases", task 05 AC6). Coalescing of
+    repeated transitions is left to ``notify_host_status`` (task 05 AC3/AC5).
+    """
+    events: list[HostStatusEvent] = []
+    for host, now_reachable in after.items():
+        prev = before.get(host)
+        if prev is None:
+            continue  # first scan for this host — no baseline, no alert
+        if prev and not now_reachable:
+            events.append(HostStatusEvent(
+                host=host, event="down", error=_last_host_errors.get(host),
+            ))
+        elif (not prev) and now_reachable:
+            events.append(HostStatusEvent(host=host, event="recovered"))
+    return events
 
 
 def run_check() -> None:
@@ -580,6 +614,10 @@ def run_check() -> None:
         return
 
     hosts = _config.DOCKER_HOSTS
+
+    # Baseline reachability from the previous scan, used to detect
+    # down/recovered transitions this cycle (task 05).
+    host_reachable_before = dict(_last_host_reachable)
 
     # Per-host raw scan artifacts; hosts that raise are recorded in
     # host_status below and simply absent from this list.
@@ -612,6 +650,14 @@ def run_check() -> None:
             # Always close — remote clients hold SSH connections that must
             # not leak across repeated scans.
             client.close()
+
+    # Host up/down alerts are independent of the update payload: a reachability
+    # transition must be reported even when no host produced any scan results
+    # this cycle. Coalescing and DRY_RUN handling live in notify_host_status
+    # (task 05); transitions are first-scan-primed via _detect_host_events.
+    host_events = _detect_host_events(host_reachable_before, _last_host_reachable)
+    if host_events:
+        notify_host_status(host_events)
 
     if not results:
         _config.log.error("No hosts were reachable in this scan cycle")
