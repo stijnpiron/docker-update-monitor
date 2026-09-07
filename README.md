@@ -116,12 +116,12 @@ services:
 
 ### Detection mode reference
 
-| Labels set | Tag matches regex? | Mode used |
-|---|---|---|
-| `tag-regex` only | Yes | Semver |
-| `tag-regex` only | No | Implicit digest (scan-to-scan comparison) |
-| `mode: digest` only | — | Explicit digest (RepoDigests vs registry) |
-| `mode: digest` + `tag-regex` | Any | Explicit digest (semver bypassed; regex used only for version resolution) |
+| Labels set                   | Tag matches regex? | Mode used                                                                 |
+| ---------------------------- | ------------------ | ------------------------------------------------------------------------- |
+| `tag-regex` only             | Yes                | Semver                                                                    |
+| `tag-regex` only             | No                 | Implicit digest (scan-to-scan comparison)                                 |
+| `mode: digest` only          | —                  | Explicit digest (RepoDigests vs registry)                                 |
+| `mode: digest` + `tag-regex` | Any                | Explicit digest (semver bypassed; regex used only for version resolution) |
 
 > **Explicit vs implicit digest:** The explicit `mode: digest` label compares the running image's local digest against the registry on every scan, including the first. The implicit fallback (tag doesn't match `tag-regex`) compares the registry digest across two consecutive scans and is silent on the first. Use `mode: digest` when your container exclusively uses rolling tags and you want immediate detection.
 
@@ -149,22 +149,16 @@ update-level finding for one container:
   {
     "container_name": "sonarr",
     "stack": "media",
+    "host": "local",
     "image": "linuxserver/sonarr",
     "current_version": "4.0.2.1183",
     "new_version": "4.0.9.1835",
     "update_type": "patch"
   },
   {
-    "container_name": "sonarr",
-    "stack": "media",
-    "image": "linuxserver/sonarr",
-    "current_version": "4.0.2.1183",
-    "new_version": "4.1.0.2000",
-    "update_type": "minor"
-  },
-  {
     "container_name": "nginx",
     "stack": "proxy",
+    "host": "prod",
     "image": "library/nginx",
     "current_version": "1.25.3",
     "new_version": "1.27.4",
@@ -173,7 +167,25 @@ update-level finding for one container:
 ]
 ```
 
-`update_type` is one of `patch`, `minor`, `major`, or `digest`.
+`update_type` is one of `patch`, `minor`, `major`, or `digest`. Each row carries
+a `host` field — the daemon the finding came from (`local`, or a name from
+`DOCKER_HOSTS`).
+
+In addition to the update payload, a host that becomes unreachable raises a
+separate **host-status** alert, and a host that comes back up raises a
+`recovered` alert:
+
+```json
+{
+  "type": "host_status",
+  "host": "prod",
+  "event": "down",
+  "error": "ssh: Connection timed out"
+}
+```
+
+`event` is `down` or `recovered`. These alerts are coalesced per host by
+`HOST_REACH_COOLDOWN`.
 
 For digest updates the `new_version` field contains either a resolved versioned tag (when one
 could be matched to the new digest) or the raw registry digest (`sha256:…`).
@@ -198,12 +210,69 @@ could be matched to the new digest) or the raw registry digest (`sha256:…`).
 | `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                                                                                                                                                                     |
 | `WEB_PORT`           | `8080`           | Port for the web dashboard and health endpoint                                                                                                                                                             |
 
+### Multi-host scanning over SSH (optional)
+
+By default the monitor scans only the local Docker socket. Set `DOCKER_HOSTS` to
+also scan one or more remote daemons over SSH from this single instance, all on
+the same `CRON_SCHEDULE`:
+
+| Variable              | Default   | Description                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKER_HOSTS`        | _(empty)_ | Comma-separated `name=ssh://user@host` pairs scanned in addition to the local daemon. Each `name` is the stable per-host label (shown in the dashboard and notifications), restricted to `A-Za-z0-9._-`, and must be unique and not the reserved value `local`. Only the `ssh://` scheme is supported. When unset, behavior is identical to before this feature (local only). |
+| `HOST_REACH_COOLDOWN` | `1h`      | Re-alert window for a host down/recovered alert. Accepted formats: `15m`, `1h`, `2d`, `1w`. A repeat transition for the same host inside this window is coalesced (no new alert); after it elapses the alert refires.                                                                                                                                                         |
+
+**Working example** — scan the local daemon plus two remote hosts:
+
+```
+DOCKER_HOSTS=prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host
+HOST_REACH_COOLDOWN=1h
+```
+
+**Validation (fail fast at startup).** A malformed `DOCKER_HOSTS` value — a pair
+missing `=`, a duplicate host name, a name equal to the reserved `local`, a name
+with invalid characters, an empty name, or a `docker_host_url` scheme other than
+`ssh://` — is logged and exits with status `1` before the scheduler starts, the
+same way an invalid `CRON_SCHEDULE` does. It is never silently dropped and
+discovered later as "host unreachable".
+
+**SSH setup.** The image bundles `openssh-client`. The scanner builds each remote
+`DockerClient` with `use_ssh_client=True`, so the system `ssh` binary resolves
+identity per host from a standard `~/.ssh/config` — no key material ever appears
+in `DOCKER_HOSTS`. Mount one read-only shared SSH config plus one read-only
+private key per host (one key per host, never a single shared key):
+
+```
+# ./config/ssh/.ssh/config  (mounted read-only at /home/ssh/.ssh)
+Host prod-host
+    IdentityFile /run/secrets/ssh_prod_key
+    StrictHostKeyChecking accept-new
+
+Host nas-host
+    IdentityFile /run/secrets/ssh_nas_key
+    StrictHostKeyChecking accept-new
+```
+
+Each `Host <alias>` block must match a host `name` in `DOCKER_HOSTS`. The
+mounted directory and config file must be readable by the container user
+`nobody`. The image sets `nobody`'s **passwd** home directory to `/home/ssh`
+(via `usermod -d`), so the ssh client — invoked by docker-py with no `-F`
+override — finds `/home/ssh/.ssh/config` by default; no `HOME` override is
+needed. Note the config mount is read-only, so `accept-new` host-key entries
+cannot persist there (ssh prints a benign warning and still connects); add
+`UserKnownHostsFile /dev/null` to suppress it, or mount a writable
+`~/.ssh/known_hosts` for host-key pinning.
+
+**Unreachable hosts** are skipped (never fatal), recorded per host in
+`host_status`, and surfaced in the dashboard status strip. A **host down**
+transition raises one "unreachable" alert; a **recovered** transition raises one
+"recovered" alert; both are coalesced by `HOST_REACH_COOLDOWN`.
+
 ### Webhook channel
 
-| Variable            | Default   | Description                                      |
-| ------------------- | --------- | ------------------------------------------------ |
-| `NOTIFY_ENDPOINT`   | _(empty)_ | Webhook URL to POST updates to                   |
-| `NOTIFY_AUTH_TYPE`  | _(empty)_ | Auth type: `bearer`, `basic`, or empty (no auth) |
+| Variable            | Default   | Description                                                                                                                       |
+| ------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `NOTIFY_ENDPOINT`   | _(empty)_ | Webhook URL to POST updates to                                                                                                    |
+| `NOTIFY_AUTH_TYPE`  | _(empty)_ | Auth type: `bearer`, `basic`, or empty (no auth)                                                                                  |
 | `NOTIFY_AUTH_TOKEN` | _(empty)_ | Credentials for the `Authorization` header. For `bearer`, the raw token. For `basic`, `user:pass` (base64-encoded automatically). |
 
 ### Email channel (SMTP)
@@ -260,8 +329,9 @@ The monitor includes a built-in web dashboard accessible on port `8080` (configu
 ### Features
 
 - **Summary cards** — containers monitored, new/known/resolved update counts, warnings, not-monitored count
-- **Update table** — all detected updates with stack, container, image, versions, type, status, and first-seen date
-- **Sortable columns** — click any column header to sort; default sort is by stack
+- **Host status strip** — one chip per configured host (green up / red down / grey unknown) with the last error shown for any down host
+- **Update table** — all detected updates with a **Host** column, plus stack, container, image, versions, type, status, and first-seen date
+- **Sortable columns** — click any column header to sort; default sort is by host, then stack
 - **Warnings section** — scan warnings and errors (invalid regex, missing tags, pattern mismatches)
 - **Not Monitored section** — collapsible list of containers without any monitoring label (`tag-regex` or `mode: digest`), with reasons
 - **Scan Now button** — trigger an immediate scan from the UI
@@ -284,26 +354,28 @@ Then open `http://<your-host>:8080` in a browser.
 
 ### API endpoints
 
-| Method | Path           | Description                                      |
-| ------ | -------------- | ------------------------------------------------ |
-| `GET`  | `/`            | Dashboard page (HTML)                            |
-| `GET`  | `/health`      | Liveness check (JSON) — used by Docker HEALTHCHECK. Always `200` while the server is up; body `status` is `"starting"` until the first scan completes, then `"ok"`. |
-| `GET`  | `/api/updates` | All updates with status as JSON array            |
-| `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted     |
-| `GET`  | `/metrics`     | Prometheus metrics (text/plain)                  |
+| Method | Path               | Description                                                                                                                                                         |
+| ------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/`                | Dashboard page (HTML)                                                                                                                                               |
+| `GET`  | `/health`          | Liveness check (JSON) — used by Docker HEALTHCHECK. Always `200` while the server is up; body `status` is `"starting"` until the first scan completes, then `"ok"`. |
+| `GET`  | `/api/updates`     | All updates with status as JSON array (each row includes its `host`)                                                                                                |
+| `GET`  | `/api/host-status` | Per-host reachability snapshot as a JSON array (`host`, `reachable`, `error`, `checked_at`)                                                                         |
+| `POST` | `/api/scan`        | Trigger immediate scan, returns 202 Accepted                                                                                                                        |
+| `GET`  | `/metrics`         | Prometheus metrics (text/plain)                                                                                                                                     |
 
 ### Prometheus metrics
 
 `GET /metrics` exposes the following metrics in Prometheus text format, updated after each scan:
 
-| Metric | Type | Description |
-| ------ | ---- | ----------- |
-| `dum_containers_monitored` | Gauge | Number of containers with update-monitor labels |
-| `dum_updates_available{type}` | Gauge | Active (non-resolved) updates by type (`patch`, `minor`, `major`, `digest`) |
-| `dum_check_duration_seconds` | Gauge | Duration of the last update check in seconds |
-| `dum_check_errors_total` | Counter | Total errors encountered during checks (Docker connection failures, registry warnings) |
-| `dum_last_check_timestamp_seconds` | Gauge | Unix timestamp of the last completed check |
-| `dum_notifications_sent_total{channel}` | Counter | Total notification dispatches by channel (`webhook`, `email`) |
+| Metric                                  | Type    | Description                                                                                                                                                                    |
+| --------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dum_containers_monitored`              | Gauge   | Number of containers with update-monitor labels                                                                                                                                |
+| `dum_updates_available{type,host}`      | Gauge   | Active (non-resolved) updates by type (`patch`, `minor`, `major`, `digest`) and host                                                                                           |
+| `dum_host_reachable{host}`              | Gauge   | Per-host reachability gauge (`1` = reachable, `0` = unreachable). Only present while `DOCKER_HOSTS` scans remote hosts; the local-only default still emits the `local` series. |
+| `dum_check_duration_seconds`            | Gauge   | Duration of the last update check in seconds                                                                                                                                   |
+| `dum_check_errors_total`                | Counter | Total errors encountered during checks (Docker connection failures, registry warnings)                                                                                         |
+| `dum_last_check_timestamp_seconds`      | Gauge   | Unix timestamp of the last completed check                                                                                                                                     |
+| `dum_notifications_sent_total{channel}` | Counter | Total notification dispatches by channel (`webhook`, `email`)                                                                                                                  |
 
 Example Prometheus scrape config:
 
