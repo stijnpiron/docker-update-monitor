@@ -70,6 +70,24 @@ services:
       # Examples: "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%b %d, %Y %I:%M %p"
       DASHBOARD_DATETIME_FORMAT: "${DASHBOARD_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
 
+      # --- Multi-host scanning over SSH (optional) ---
+      # Scan one or more remote Docker daemons in addition to the local one, all
+      # on the single CRON_SCHEDULE above, from this one instance. Leave DOCKER_HOSTS
+      # unset (the default) to keep scanning only the local socket — behavior is
+      # unchanged and no SSH connection is attempted.
+      #
+      # Format: comma-separated "name=ssh://user@host" pairs. The name is the
+      # stable per-host label shown in the dashboard and notifications and must
+      # match a `Host <alias>` block in the shared OpenSSH config mounted below
+      # (see the volumes/secrets notes). `local` is reserved for the local daemon.
+      # No HOME override is needed: the image sets user `nobody`'s home directory
+      # to /home/ssh so the OpenSSH client finds /home/ssh/.ssh/config by default.
+      #
+      # Example:
+      #
+      #   DOCKER_HOSTS: "${DOCKER_HOSTS:-prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host}"
+      #   HOST_REACH_COOLDOWN: "${HOST_REACH_COOLDOWN}"   # re-alert window for a host down/recovered, e.g. "30m", "1h", "2d" (default "1h")
+
     ports:
       # Expose the web dashboard and /metrics endpoint
       - "8080:8080"
@@ -80,9 +98,45 @@ services:
       # Persistent state database
       - ./data:/app/data
 
+      # --- Multi-host SSH config (optional; enable when DOCKER_HOSTS is set) ---
+      # Mount the shared, read-only OpenSSH client config. The image sets user
+      # `nobody`'s **passwd** home directory to /home/ssh (via `usermod -d`), so
+      # the ssh client (invoked by DockerClient(use_ssh_client=True) with no -F
+      # flag) reads /home/ssh/.ssh/config by default — no HOME env override is
+      # needed. Each `Host <alias>` block maps its host to a per-host key (a
+      # /run/secrets/ path, see the secrets below). The mounted directory and
+      # the config file must be readable by the container user `nobody`. Note
+      # the mount is read-only, so `accept-new` host-key entries cannot persist
+      # there (ssh prints a benign warning and still connects); set
+      # `UserKnownHostsFile /dev/null` in the config to suppress that, or mount
+      # a writable known_hosts if you want host-key pinning.
+      # Example ./config/ssh/.ssh/config:
+      #
+      #   Host prod-host
+      #       IdentityFile /run/secrets/ssh_prod_key
+      #       StrictHostKeyChecking accept-new
+      #
+      #   Host nas-host
+      #       IdentityFile /run/secrets/ssh_nas_key
+      #       StrictHostKeyChecking accept-new
+      #
+      # - ./config/ssh/.ssh:/home/ssh/.ssh:ro
+
     # Needed so 'nobody' user can access the Docker socket
     group_add:
       - "${DOCKER_GID:-999}"
+
+    # --- Multi-host SSH keys (optional; enable when DOCKER_HOSTS is set) ---
+    # One read-only secret per remote host, referenced by the Host blocks in the
+    # mounted config. Each secret is mounted at /run/secrets/<name>. Using a key
+    # per host limits blast radius if one host/key is compromised. The source
+    # private-key files MUST be readable by `nobody` (chmod 644) or the scan
+    # fails with an auth/permission error and the host is marked unreachable —
+    # a clear, fixable failure, not a silent no-op.
+    #
+    # secrets:
+    #   - ssh_prod_key
+    #   - ssh_nas_key
 
     healthcheck:
       test: ["CMD", "python", "-m", "app.healthcheck"]
@@ -90,3 +144,15 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+# --- Multi-host SSH keys (optional; top-level `secrets`) ---
+# Define each per-host private key here and enable it in the service `secrets:`
+# list above. Each entry maps a file on the Docker host to a read-only
+# /run/secrets/<name> in the container. Source files must be `chmod 644` so the
+# `nobody` user can read them.
+#
+# secrets:
+#   ssh_prod_key:
+#     file: ./config/ssh/ssh_prod_key   # private key for prod-host  (chmod 644)
+#   ssh_nas_key:
+#     file: ./config/ssh/ssh_nas_key    # private key for nas-host   (chmod 644)
