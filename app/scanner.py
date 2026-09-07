@@ -214,6 +214,7 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
                 "stack": skip_stack,
                 "image": skip_image,
                 "reason": f"No '{_config.LABEL_PREFIX}.tag-regex' label",
+                "host": host,
             })
             continue
 
@@ -746,12 +747,15 @@ def run_check() -> None:
     )
 
     # Update health endpoint state (host_status feeds the dashboard strip,
-    # task 06)
+    # task 06). Warning/mismatch rows carry the host so the dashboard can
+    # badge + sort them.
     warnings_data = [
-        {"container_name": w.container_name, "image": w.image, "level": w.level, "message": w.message}
+        {"container_name": w.container_name, "image": w.image, "level": w.level,
+         "message": w.message, "host": w.host, "stack": ""}
         for w in all_warnings
     ] + [
-        {"container_name": m.container_name, "image": m.image, "level": "warning", "message": m.reason}
+        {"container_name": m.container_name, "image": m.image, "level": "warning",
+         "message": m.reason, "host": m.host, "stack": m.stack}
         for m in all_mismatches
     ]
     update_state(last_check=scan_time, containers_monitored=monitored_total,
