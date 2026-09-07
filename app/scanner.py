@@ -739,11 +739,20 @@ def run_check() -> None:
     # Update Prometheus metrics
     if all_warnings:
         check_errors_total.inc(len(all_warnings))
+    # Restrict the metric inputs to the currently-configured hosts: a host that
+    # was dropped from DOCKER_HOSTS (or its stale DB / host_status rows) must not
+    # keep its old metric series alive. The host-labelled zero-out logic in
+    # update_after_scan() then clears the stale dum_updates_available +
+    # dum_host_reachable series (task 07 AC3).
+    configured_hosts = {name for name, _ in hosts}
+    metric_updates = [u for u in get_all_updates() if u.get("host") in configured_hosts]
+    metric_host_status = [r for r in get_host_status() if r["host"] in configured_hosts]
     update_after_scan(
         monitored=monitored_total,
-        updates=get_all_updates(),
+        updates=metric_updates,
         duration_seconds=time.monotonic() - _scan_start,
         last_check_ts=scan_time.timestamp(),
+        host_status=metric_host_status,
     )
 
     # Update health endpoint state (host_status feeds the dashboard strip,
