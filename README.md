@@ -258,9 +258,15 @@ mounted directory and config file must be readable by the container user
 (via `usermod -d`), so the ssh client — invoked by docker-py with no `-F`
 override — finds `/home/ssh/.ssh/config` by default; no `HOME` override is
 needed. Note the config mount is read-only, so `accept-new` host-key entries
-cannot persist there (ssh prints a benign warning and still connects); add
-`UserKnownHostsFile /dev/null` to suppress it, or mount a writable
-`~/.ssh/known_hosts` for host-key pinning.
+cannot persist there: every connection to a host whose key is not recorded
+prints "Failed to add the host to the list of known hosts" and continues
+without ever verifying the key. For host-key pinning, mount a writable
+`known_hosts` file (without `:ro`) and point `UserKnownHostsFile` at it:
+`accept-new` records the key on first contact (one-time warning) and
+afterwards refuses connections whose key has changed (the host is recorded
+unreachable). Do not use `UserKnownHostsFile /dev/null` to silence the
+warning — writes to /dev/null always succeed, so ssh prints "Permanently
+added …" on every connect instead, while recording nothing.
 
 **Unreachable hosts** are skipped (never fatal), recorded per host in
 `host_status`, and surfaced in the dashboard status strip. A **host down**

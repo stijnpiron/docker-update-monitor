@@ -20,7 +20,7 @@ from app.notifications import dispatch as notify
 from app.notifications.host_status import notify_host_status
 from app.state import (
     process_scan, mark_notified, get_stored_digest, store_digest, get_all_updates,
-    get_host_status, upsert_host_status,
+    get_host_status, upsert_host_status, purge_orphaned_hosts,
 )
 from app.health import update_state
 from app.metrics import check_errors_total, update_after_scan
@@ -554,15 +554,35 @@ def _connect_host(host: str, url: str | None):
 
 
 def _record_host_reachable(host: str) -> None:
-    """Record *host* as reachable and note the transition in memory."""
+    """Record *host* as reachable and note the transition in memory.
+
+    Passing ``down_since=None`` (the default) on a down→up transition clears
+    the column, so the dashboard's "unreachable since" no longer shows a stale
+    timestamp after recovery.
+    """
     upsert_host_status(host, True, None, datetime.now(timezone.utc).isoformat())
     _last_host_reachable[host] = True
     _last_host_errors.pop(host, None)
 
 
 def _record_host_unreachable(host: str, error: str) -> None:
-    """Record *host* as unreachable and note the transition in memory."""
-    upsert_host_status(host, False, error, datetime.now(timezone.utc).isoformat())
+    """Record *host* as unreachable and note the transition in memory.
+
+    ``down_since`` is the transition-time (D2): the start of the current
+    unreachable streak, NOT the latest check. It is set to the current scan
+    time only when this is a *fresh* down (the host was reachable, or there is
+    no prior recorded state); if the host was *already* recorded down with a
+    ``down_since``, that original value is preserved. Basing this on the DB row
+    (not the in-memory reachability dict) keeps the "since" time intact across
+    process restarts — a continuing outage must not reset to the current time.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    existing = {r["host"]: r for r in get_host_status()}.get(host)
+    if existing and not existing["reachable"] and existing.get("down_since"):
+        down_since = existing["down_since"]  # continuing outage — keep the original
+    else:
+        down_since = now                      # fresh transition (was up / new / unknown)
+    upsert_host_status(host, False, error, now, down_since=down_since)
     _last_host_reachable[host] = False
     _last_host_errors[host] = error
     check_errors_total.inc()
@@ -596,6 +616,23 @@ def _detect_host_events(before: dict[str, bool], after: dict[str, bool]) -> list
     return events
 
 
+def _purge_orphaned_hosts(configured: set[str]) -> None:
+    """D3: drop DB rows + in-memory entries for hosts no longer configured.
+
+    Called at the top of ``run_check()`` after the host list is known. Mirrors
+    the metrics layer, which already zeroes per-host series for hosts that
+    fall out of the configured set on each scan. A host that is removed and
+    later re-added starts from a clean state — a fresh baseline (no spurious
+    down/recovered on the first scan back), matching first-scan priming.
+    """
+    removed = purge_orphaned_hosts(configured)
+    for orphan in set(_last_host_reachable) - configured:
+        _last_host_reachable.pop(orphan, None)
+        _last_host_errors.pop(orphan, None)
+    if removed:
+        _config.log.info(f"Purged {removed} orphaned row(s) for hosts no longer in DOCKER_HOSTS")
+
+
 def run_check() -> None:
     _config.log.info("=" * 60)
     _config.log.info("Starting update check")
@@ -616,6 +653,14 @@ def run_check() -> None:
 
     hosts = _config.DOCKER_HOSTS
 
+    # A host removed from DOCKER_HOSTS since the last scan still has a stale
+    # row in host_status (and possibly pending updates) — the dashboard strip,
+    # /api/host-status, and /api/updates would otherwise keep showing it
+    # indefinitely (D3). Purge its DB rows now that the host list is known, and
+    # drop its in-memory transition-tracking entries so a later re-add starts
+    # from a clean baseline (no spurious down/recovered on the first scan back).
+    _purge_orphaned_hosts({name for name, _url in hosts})
+
     # Baseline reachability from the previous scan, used to detect
     # down/recovered transitions this cycle (task 05).
     host_reachable_before = dict(_last_host_reachable)
@@ -630,13 +675,6 @@ def run_check() -> None:
             client = _connect_host(host, url)
         except DockerException as exc:
             _config.log.warning(f"{hp}Unreachable — {exc}")
-            if host == "local" and len(hosts) == 1:
-                # Preserve the pre-feature single-local-host behavior: a
-                # connection failure is logged as the fatal error and ends
-                # the check.
-                _config.log.error("Cannot connect to Docker")
-                check_errors_total.inc()
-                return
             _record_host_unreachable(host, str(exc))
             continue
 
@@ -647,6 +685,9 @@ def run_check() -> None:
         except (DockerException, requests.RequestException) as exc:
             _config.log.warning(f"{hp}Unreachable — {exc}")
             _record_host_unreachable(host, str(exc))
+        except Exception as exc:
+            _config.log.error(f"{hp}scan failed with unexpected error — {exc}", exc_info=True)
+            _record_host_unreachable(host, f"scan error: {exc}")
         finally:
             # Always close — remote clients hold SSH connections that must
             # not leak across repeated scans.
@@ -662,7 +703,16 @@ def run_check() -> None:
 
     if not results:
         _config.log.error("No hosts were reachable in this scan cycle")
-        return
+        # Keep going: the per-host host_status rows (and down alerts above) are
+        # already written for every host, but the Prometheus metrics
+        # (dum_host_reachable / dum_check_duration_seconds / dum_containers_
+        # monitored) and the dashboard "Last scan" timestamp would otherwise be
+        # left at their previous-scan values on an all-down cycle — a
+        # Prometheus alert on dum_host_reachable == 0 in particular would never
+        # fire for an all-down scan. Falling through with results == [] is safe:
+        # notify([]) is a no-op, the per-host loops do nothing, and
+        # update_after_scan(..., host_status=…) refreshes the gauges (the QA D5
+        # fix). No early return.
 
     scan_time = datetime.now(timezone.utc)
 
@@ -731,7 +781,10 @@ def run_check() -> None:
                 continue
         actionable.append(u)
 
-    # Single notification dispatch per scan, with the merged, host-tagged lists
+    # Single notification dispatch per scan, with the merged, host-tagged lists.
+    # An all-down cycle reaches this with actionable/mismatches/warnings all
+    # empty; dispatch no-ops internally in that case (QA D5 — no early return
+    # before the metrics/health update below).
     notify(actionable, mismatches=all_mismatches, warnings=all_warnings)
     if actionable:
         mark_notified(actionable, scan_time)

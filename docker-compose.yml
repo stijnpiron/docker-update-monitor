@@ -106,10 +106,21 @@ services:
       # needed. Each `Host <alias>` block maps its host to a per-host key (a
       # /run/secrets/ path, see the secrets below). The mounted directory and
       # the config file must be readable by the container user `nobody`. Note
-      # the mount is read-only, so `accept-new` host-key entries cannot persist
-      # there (ssh prints a benign warning and still connects); set
-      # `UserKnownHostsFile /dev/null` in the config to suppress that, or mount
-      # a writable known_hosts if you want host-key pinning.
+      # the mount is read-only, so `accept-new` host-key entries cannot
+      # persist: every connection to a host whose key is not recorded
+      # prints "Failed to add the host to the list of known hosts" and
+      # continues — the key is never recorded and never verified. For real
+      # host-key pinning, mount a writable `known_hosts` file separately
+      # (without `:ro`) and point `UserKnownHostsFile` in the config at it
+      # (e.g.
+      # `- ./config/ssh/known_hosts:/home/ssh/known_hosts`): with
+      # `accept-new`, first contact records the key (a one-time warning),
+      # later connects are silent, and a host that changes its key thereafter
+      # fails the connection hard with "Host key verification failed" and is
+      # recorded unreachable. Do not use `UserKnownHostsFile /dev/null` to
+      # "suppress" the warning — writes to /dev/null always succeed, so ssh
+      # prints "Permanently added …" on **every** connect instead, while
+      # recording nothing.
       # Example ./config/ssh/.ssh/config:
       #
       #   Host prod-host

@@ -1,7 +1,7 @@
 """Unit tests for app.state — SQLite state persistence."""
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -962,8 +962,122 @@ class TestHostStatus:
         assert rows[0]["error"] is None
         assert rows[0]["checked_at"] == "2026-01-02T00:00:00+00:00"
 
+    def test_upsert_host_status_down_since_set_when_unreachable(self):
+        """QA D2: down_since records the start of the current unreachable
+        streak. It is populated for an unreachable row and None otherwise."""
+        state.upsert_host_status("staging", False, "offline",
+                                 "2026-01-01T00:00:00+00:00",
+                                 down_since="2026-01-01T00:00:00+00:00")
+        row = state.get_host_status()[0]
+        assert row["reachable"] == 0
+        assert row["down_since"] == "2026-01-01T00:00:00+00:00"
+
+    def test_upsert_host_status_down_since_none_when_reachable(self):
+        """QA D2: when reachable, down_since is forced to None even if a
+        value is passed (it must not leak a stale 'since' on recovery)."""
+        state.upsert_host_status("staging", True, None,
+                                 "2026-01-01T00:00:00+00:00",
+                                 down_since="2026-01-01T00:00:00+00:00")
+        row = state.get_host_status()[0]
+        assert row["reachable"] == 1
+        assert row["down_since"] is None
+
+    def test_upsert_host_status_default_down_since_is_none(self):
+        """QA D2: omitting down_since yields None (forward-compatible)."""
+        state.upsert_host_status("staging", False, "offline", "2026-01-01T00:00:00+00:00")
+        assert state.get_host_status()[0]["down_since"] is None
+
     def test_get_host_status_empty(self):
         assert state.get_host_status() == []
+
+
+class TestPurgeOrphanedHosts:
+    """QA D3: rows whose host is no longer in the configured set are dropped.
+
+    The config layer guarantees ``DOCKER_HOSTS`` is never empty (``local`` is
+    always present), so the empty-set guard is a pure safety net.
+    """
+
+    def test_purge_removes_orphaned_host_status_row(self):
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("retired", True, None, "2026-01-01T00:00:00+00:00")
+
+        deleted = state.purge_orphaned_hosts({"local", "prod"})
+
+        assert deleted == 1  # one host_status row removed
+        hosts = {r["host"] for r in state.get_host_status()}
+        assert hosts == {"prod"}
+
+    def test_purge_removes_orphaned_pending_updates_only(self):
+        """D3: a removed host's *pending* update rows are dropped, but its
+        *resolved* (historical) rows are preserved as an audit trail.
+
+        Seeding follows the per-host call pattern used by ``run_check`` and
+        passes ``existing_containers`` so the pending rows seed survives
+        (otherwise the "remove-container" cleanup in ``process_scan`` would
+        delete them as absent).
+        """
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        retired_pending = _make_update(container_name="web", host="retired")
+        retired_resolved = _make_update(
+            container_name="old-web", host="retired",
+            current_version="8.0.0", new_version="9.9.9",
+        )
+        # A pending row on a *configured* host must survive the purge.
+        keep = _make_update(container_name="web", host="prod")
+
+        # All retired-host containers "exist" in docker this cycle so
+        # process_scan's removal cleanup leaves the seeded pending rows alone.
+        state.process_scan(
+            [retired_pending, retired_resolved], scan_time=t1, host="retired",
+            existing_containers={"web", "old-web"},
+        )
+        state.process_scan([keep], scan_time=t1, host="prod")
+
+        # Force retired_resolved into a resolved state so the purge's
+        # "keep resolved" path is actually exercised (mark_notified alone
+        # only sets notified_at, not resolved_at).
+        resolved_ts = (t1 + timedelta(seconds=1)).isoformat()
+        with state._conn_lock:
+            conn = state._connect()
+            conn.execute(
+                "UPDATE updates SET resolved_at=? WHERE host='retired' "
+                "AND container_name='old-web'",
+                (resolved_ts,),
+            )
+            conn.commit()
+
+        deleted = state.purge_orphaned_hosts({"local", "prod"})
+
+        remaining = {(r["host"], r["container_name"]) for r in state.get_all_updates()}
+        # Retired's PENDING row (web) was purged…
+        assert ("retired", "web") not in remaining
+        # …its resolved row (old-web) was preserved (audit trail)…
+        assert ("retired", "old-web") in remaining
+        # …and the configured host's pending row is untouched.
+        assert ("prod", "web") in remaining
+        # Only the one orphaned *pending* row was deleted; resolved rows kept.
+        assert deleted == 1
+
+    def test_purge_noop_when_all_configured(self):
+        state.upsert_host_status("local", True, None, "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+
+        assert state.purge_orphaned_hosts({"local", "prod"}) == 0
+        assert {r["host"] for r in state.get_host_status()} == {"local", "prod"}
+
+    def test_purge_empty_configured_set_is_noop(self):
+        """Safety: an empty configured set must NOT wipe every host's rows."""
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+
+        assert state.purge_orphaned_hosts(set()) == 0
+        assert state.get_host_status()
+
+    def test_purge_is_idempotent(self):
+        state.upsert_host_status("retired", True, None, "2026-01-01T00:00:00+00:00")
+
+        assert state.purge_orphaned_hosts({"local"}) == 1
+        assert state.purge_orphaned_hosts({"local"}) == 0  # nothing left to remove
 
 
 class TestEventCooldowns:

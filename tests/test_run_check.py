@@ -47,17 +47,31 @@ def _make_pruned_container(name, image_tag, labels):
 class TestRunCheckDockerConnection:
     """Docker connection failure handling."""
 
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
-    def test_docker_connection_error_logs_and_returns(self, mock_docker, caplog):
+    def test_local_connection_failure_recorded_unreachable(
+        self, mock_docker, mock_token, caplog
+    ):
+        """F2a: a local Docker connection failure records the host as unreachable
+        in host_status instead of doing a special-case early return."""
+        from app import state as state_mod
         from docker.errors import DockerException
         import logging
 
         mock_docker.from_env.side_effect = DockerException("Cannot connect")
 
-        with caplog.at_level(logging.ERROR):
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             caplog.at_level(logging.WARNING):
             run_check()
 
-        assert "Cannot connect to Docker" in caplog.text
+        assert "Unreachable" in caplog.text
+        assert "No hosts were reachable in this scan cycle" in caplog.text
+
+        status = state_mod.get_host_status()
+        assert len(status) == 1
+        assert status[0]["host"] == "local"
+        assert status[0]["reachable"] == 0
+        assert "Cannot connect" in status[0]["error"]
 
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
@@ -75,15 +89,24 @@ class TestRunCheckDockerConnection:
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
     def test_client_closed_even_when_scan_raises(self, mock_docker, mock_token):
-        """Docker client must be closed even when an unexpected exception occurs mid-scan."""
+        """An unexpected exception mid-scan is caught by the per-host guard
+        (F1): the host is recorded unreachable, run_check() completes normally,
+        and the client is still closed via the finally block."""
+        from app import state as state_mod
+
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
         mock_client.containers.list.side_effect = RuntimeError("unexpected failure")
 
-        with patch.object(config_mod, "GITHUB_TOKEN", ""), pytest.raises(RuntimeError):
-            run_check()
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()  # must not raise
 
         mock_client.close.assert_called_once()
+
+        status = {s["host"]: s for s in state_mod.get_host_status()}
+        assert status["local"]["reachable"] == 0
+        assert "scan error" in status["local"]["error"]
+        assert "unexpected failure" in status["local"]["error"]
 
 
 class TestRunCheckContainerProcessing:

@@ -255,6 +255,63 @@ class TestHostMigration:
         assert "event_cooldowns" in names
         conn.close()
 
+    def test_fresh_schema_host_status_has_down_since(self):
+        """QA D2: a fresh host_status table includes the down_since column."""
+        conn = self._conn_with_fresh_schema()
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_status)").fetchall()}
+        assert "down_since" in cols
+        conn.close()
+
+    def test_migration_adds_down_since_to_existing_host_status(self):
+        """QA D2: a host_status table created before the D2 change gains the
+        down_since column in place (no data loss; legacy down rows stay NULL)."""
+        conn = self._make_hostless_db()
+        # Simulate a DB that already has host_status (multi-host feature) but
+        # predates the down_since column, with a legacy down row present.
+        conn.execute(
+            """CREATE TABLE host_status (
+                host TEXT PRIMARY KEY,
+                reachable INTEGER NOT NULL,
+                error TEXT,
+                checked_at TEXT
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO host_status (host, reachable, error, checked_at) "
+            "VALUES ('prod', 0, 'offline', '2026-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+
+        run_migrations(conn)
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_status)").fetchall()}
+        assert "down_since" in cols
+        # The pre-existing row survives and its down_since is NULL (legacy).
+        row = conn.execute(
+            "SELECT host, reachable, down_since FROM host_status WHERE host='prod'"
+        ).fetchone()
+        assert (row[0], row[1], row[2]) == ("prod", 0, None)
+        conn.close()
+
+    def test_migration_down_since_add_is_idempotent(self):
+        """QA D2: re-running migrations does not add down_since twice or alter data."""
+        conn = self._make_hostless_db()
+        conn.execute(
+            """CREATE TABLE host_status (
+                host TEXT PRIMARY KEY,
+                reachable INTEGER NOT NULL,
+                error TEXT,
+                checked_at TEXT
+            )"""
+        )
+        conn.commit()
+        run_migrations(conn)
+        first = conn.execute("PRAGMA table_info(host_status)").fetchall()
+        run_migrations(conn)
+        second = conn.execute("PRAGMA table_info(host_status)").fetchall()
+        assert first == second
+        conn.close()
+
     @staticmethod
     def _conn_with_fresh_schema() -> sqlite3.Connection:
         import app.state as state

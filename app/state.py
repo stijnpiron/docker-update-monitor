@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS host_status (
     host TEXT PRIMARY KEY,
     reachable INTEGER NOT NULL,
     error TEXT,
-    checked_at TEXT
+    checked_at TEXT,
+    down_since TEXT
 );
 """
 
@@ -396,30 +397,86 @@ def store_digest(image: str, tag: str, digest: str, timestamp: datetime | None =
 # Host reachability
 # ---------------------------------------------------------------------------
 
-def upsert_host_status(host: str, reachable: bool, error: str | None, checked_at: str) -> None:
-    """Record the latest reachability snapshot for a host (one row per host)."""
+def upsert_host_status(host: str, reachable: bool, error: str | None, checked_at: str,
+                       down_since: str | None = None) -> None:
+    """Record the latest reachability snapshot for a host (one row per host).
+
+    ``down_since`` is the transition-time (ISO-8601 UTC) of the start of the
+    current unreachable streak — i.e. the ``checked_at`` of the first scan
+    after the previous known-good state.  It is set only by the scanner on a
+    ``reachable → unreachable`` transition and cleared (to ``None``) on
+    recovery.  ``down_since`` is ``None`` whenever the host is currently
+    reachable, so a reader never has to cross-reference ``reachable``.
+    """
     with _conn_lock:
         conn = _connect()
         conn.execute(
-            """INSERT INTO host_status (host, reachable, error, checked_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO host_status (host, reachable, error, checked_at, down_since)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(host) DO UPDATE SET
                    reachable = excluded.reachable,
                    error = excluded.error,
-                   checked_at = excluded.checked_at""",
-            (host, int(reachable), error, checked_at),
+                   checked_at = excluded.checked_at,
+                   down_since = excluded.down_since""",
+            (host, int(reachable), error, checked_at,
+             None if reachable else down_since),
         )
         conn.commit()
 
 
 def get_host_status() -> list[dict]:
-    """Return reachability snapshots for every host as a list of dicts."""
+    """Return reachability snapshots for every host as a list of dicts.
+
+    Each row carries ``host``, ``reachable`` (int 0/1), ``error``,
+    ``checked_at`` (last scan), and ``down_since`` (start of the current
+    unreachable streak, or ``None`` while reachable).
+    """
     with _conn_lock:
         conn = _connect()
         rows = conn.execute(
-            "SELECT host, reachable, error, checked_at FROM host_status ORDER BY host"
+            "SELECT host, reachable, error, checked_at, down_since FROM host_status ORDER BY host"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def purge_orphaned_hosts(configured_hosts: set[str]) -> int:
+    """Drop `host_status` rows and *pending* `updates` rows for hosts that are
+    no longer configured (D3).
+
+    `configured_hosts` is the current set of host names from `DOCKER_HOSTS`.
+    Any row whose host is not in that set is stale — the host was removed from
+    the config since it last scanned. Mirrors the metrics layer, which already
+    zeroes per-host series for hosts that fall out of the configured set.
+
+    Only *pending* (`resolved_at IS NULL`) `updates` rows are dropped so a
+    removed host's finished history (resolved rows) is preserved as an audit
+    trace, not silently erased.
+
+    Returns the total number of rows deleted (host_status + updates) so the
+    caller can decide whether to log.
+    """
+    if not configured_hosts:
+        # Guard: an empty configured set would wipe every host's rows. Only
+        # reach here if DOCKER_HOSTS is empty, which config.py forbids.
+        return 0
+
+    placeholders = ",".join("?" for _ in configured_hosts)
+    host_list = list(configured_hosts)
+    deleted = 0
+    with _conn_lock:
+        conn = _connect()
+        cur = conn.execute(
+            f"DELETE FROM host_status WHERE host NOT IN ({placeholders})",
+            host_list,
+        )
+        deleted += cur.rowcount or 0
+        cur = conn.execute(
+            f"DELETE FROM updates WHERE host NOT IN ({placeholders}) AND resolved_at IS NULL",
+            host_list,
+        )
+        deleted += cur.rowcount or 0
+        conn.commit()
+    return deleted
 
 
 # ---------------------------------------------------------------------------

@@ -669,6 +669,23 @@ class TestMultiHostDashboard:
         assert "ssh: timeout" in html
         assert "30/04/2026 11:30" in html
 
+    def test_status_strip_since_uses_transition_time_not_latest_scan(self, client):
+        """QA D2: 'unreachable since' shows down_since (start of the outage),
+        not checked_at (the latest scan). When down_since is unset the label
+        falls back to checked_at."""
+        from app import state as state_mod
+        # Distinct naive timestamps: down_since is 10:00 (transition), the
+        # latest check (checked_at) advanced to 11:30.
+        state_mod.upsert_host_status(
+            "prod", False, "ssh: timeout", "2026-04-30T11:30:00",
+            down_since="2026-04-30T10:00:00",
+        )
+        with patch("app.dashboard.get_all_updates", return_value=[]):
+            html = client.get("/").data.decode()
+        assert "unreachable since" in html
+        assert "30/04/2026 10:00" in html   # transition time (down_since)
+        assert "30/04/2026 11:30" not in html  # not the latest check
+
     def test_status_strip_independent_of_updates(self, client):
         """A down host with zero pending updates still appears in the strip."""
         from app import state as state_mod

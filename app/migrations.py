@@ -95,9 +95,18 @@ def run_migrations(conn: sqlite3.Connection) -> None:
                 host TEXT PRIMARY KEY,
                 reachable INTEGER NOT NULL,
                 error TEXT,
-                checked_at TEXT
+                checked_at TEXT,
+                down_since TEXT
             )
         """)
+    else:
+        # Downgrade/upgrade path: older databases have host_status without the
+        # down_since column (the "unreachable since" transition-time, D2).  Pre-
+        # migration down rows keep down_since NULL — the exact transition time
+        # is not recoverable; it is populated on the next real transition.
+        hs_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_status)").fetchall()}
+        if "down_since" not in hs_cols:
+            conn.execute("ALTER TABLE host_status ADD COLUMN down_since TEXT")
     if "event_cooldowns" not in tables:
         conn.execute("""\
             CREATE TABLE IF NOT EXISTS event_cooldowns (

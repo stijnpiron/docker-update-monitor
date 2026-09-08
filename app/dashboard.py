@@ -86,6 +86,12 @@ def create_app() -> Flask:
             raw = row.get("reachable")
             row["reachable"] = bool(raw) if isinstance(raw, int) else None
             row["checked_at_display"] = _format_datetime(row.get("checked_at"))
+            # The "unreachable since" label shows the *transition* time (start of
+            # the current outage), not the latest check (D2). Fall back to
+            # checked_at when down_since is absent (e.g. pre-migration rows).
+            row["down_since_display"] = _format_datetime(
+                row.get("down_since") or row.get("checked_at")
+            )
             row["badge_class"] = _host_badge_class(row.get("host") or "local")
 
         # Attach the deterministic badge class to each update + skipped row

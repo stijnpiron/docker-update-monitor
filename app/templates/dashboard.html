@@ -89,7 +89,7 @@
                 <span class="host-chip__name">{{ h.host }}</span>
                 {%- if not h.reachable and h.error %}
                 <span class="host-chip__error">
-                    unreachable since {{ h.checked_at_display }}: {{ h.error }}
+                    unreachable since {{ h.down_since_display }}: {{ h.error }}
                 </span>
                 {%- endif %}
             </div>

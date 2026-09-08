@@ -273,6 +273,69 @@ class TestHostAlertCoalescing:
         assert mock_webhook.call_count == 1
         mock_webhook.assert_called_once_with(_down("prod-1"))
 
+    @patch("app.scanner.notify_host_status")
+    @patch("app.scanner.notify")
+    @patch("app.scanner.get_dockerhub_token", return_value="tok")
+    @patch("app.scanner.docker")
+    def test_still_down_across_scans_produces_no_further_event(
+        self, mock_docker, mock_token, mock_notify, mock_notify_host_status
+    ):
+        """QA D1 (2026-09-07 decision): a host that goes down and stays down
+        across multiple consecutive scans fires exactly one down alert — the
+        scan that detects the transition. No further event is synthesized for
+        a sustained outage, no matter how long it outlasts
+        ``HOST_REACH_COOLDOWN``. This pins the deliberate, documented behavior
+        (docs/multi-host-ssh.md, "Coalescing, not the existing cooldown")."""
+        from docker.errors import DockerException
+
+        hosts = [("local", None), ("remote-x", "ssh://u@hostx/tcp")]
+        scanner_mod._last_host_reachable.clear()
+        scanner_mod._last_host_errors.clear()
+        try:
+            def _do_scan(remote_up: bool):
+                local_client = MagicMock(name="local")
+                local_client.containers.list.return_value = []
+                mock_docker.from_env.return_value = local_client
+
+                remote_client = MagicMock(name="remote-x")
+                remote_client.containers.list.return_value = []
+                if remote_up:
+                    mock_docker.DockerClient.return_value = remote_client
+                    mock_docker.DockerClient.side_effect = None
+                else:
+                    mock_docker.DockerClient.side_effect = \
+                        DockerException("SSH connection refused")
+                    mock_docker.DockerClient.return_value = None
+
+                with cfg_patcher(
+                    NOTIFY_CHANNELS=["webhook"],
+                    NOTIFY_ENDPOINT="http://hook.example.com",
+                    DRY_RUN=False,
+                    GITHUB_TOKEN="",
+                ), patch.object(config_mod, "DOCKER_HOSTS", hosts):
+                    scanner_mod.run_check()
+
+            # scan 1: both up — baseline established, no event
+            _do_scan(remote_up=True)
+            assert mock_notify_host_status.call_count == 0
+            assert scanner_mod._last_host_reachable.get("remote-x") is True
+
+            # scan 2: remote-x goes down — exactly one down event fires
+            _do_scan(remote_up=False)
+            assert mock_notify_host_status.call_count == 1
+            assert scanner_mod._last_host_reachable.get("remote-x") is False
+
+            # scan 3: remote-x still down — no new transition, so no further
+            # event, no matter how long the outage has been going on
+            _do_scan(remote_up=False)
+            assert mock_notify_host_status.call_count == 1
+
+            status = {s["host"]: s for s in state_mod.get_host_status()}
+            assert status["remote-x"]["reachable"] == 0
+        finally:
+            scanner_mod._last_host_reachable.clear()
+            scanner_mod._last_host_errors.clear()
+
 
 # ---------------------------------------------------------------------------
 # AC6 — first-scan priming: no prior reachable-state means no alert
