@@ -185,7 +185,9 @@ separate **host-status** alert, and a host that comes back up raises a
 ```
 
 `event` is `down` or `recovered`. These alerts are coalesced per host by
-`HOST_REACH_COOLDOWN`.
+`HOST_REACH_COOLDOWN`. For consumers of the payload: `error` is only
+meaningful when `event` is `down` (it carries the connection failure
+message); for `recovered` events it is always `null`.
 
 For digest updates the `new_version` field contains either a resolved versioned tag (when one
 could be matched to the new digest) or the raw registry digest (`sha256:…`).

@@ -10,6 +10,20 @@ from app.models import UpdateInfo
 from app.scanner import run_check, _is_higher_version
 
 
+@pytest.fixture(autouse=True)
+def _mock_dashboard_server():
+    """Keep main() tests off real ports.
+
+    `test_dry_run_logs_mode` runs the real `main()`; unpatched, it starts a
+    waitress server on `WEB_PORT` (default 8080) in a daemon thread. If that
+    port is already in use, the thread dies with EADDRINUSE and leaks a
+    `PytestUnhandledThreadExceptionWarning` (QA finding I8). Same pattern as
+    the autouse fixture in `test_run_on_startup.py`.
+    """
+    with patch("app.main.start_dashboard"):
+        yield
+
+
 def _make_container(name, image_tag, labels, has_image_tags=True):
     """Create a mock container."""
     c = MagicMock()
@@ -549,7 +563,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "12h"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -577,7 +591,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "12h"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -609,7 +623,7 @@ class TestRunCheckCooldown:
         }
         self._mock_docker(mock_docker, labels=labels)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -639,7 +653,7 @@ class TestRunCheckCooldown:
         }
         self._mock_docker(mock_docker, labels=labels)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "12h"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -663,7 +677,7 @@ class TestRunCheckCooldown:
         }
         self._mock_docker(mock_docker, labels=labels)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              caplog.at_level(logging.WARNING):
             run_check()
 
@@ -708,7 +722,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -745,7 +759,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat

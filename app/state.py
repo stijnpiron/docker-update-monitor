@@ -427,16 +427,20 @@ def upsert_host_status(host: str, reachable: bool, error: str | None, checked_at
 def get_host_status() -> list[dict]:
     """Return reachability snapshots for every host as a list of dicts.
 
-    Each row carries ``host``, ``reachable`` (int 0/1), ``error``,
-    ``checked_at`` (last scan), and ``down_since`` (start of the current
-    unreachable streak, or ``None`` while reachable).
+    Each row carries ``host``, ``reachable`` (real bool — the column stores
+    SQLite's INTEGER 0/1, converted on read), ``error``, ``checked_at``
+    (last scan), and ``down_since`` (start of the current unreachable streak,
+    or ``None`` while reachable).
     """
     with _conn_lock:
         conn = _connect()
         rows = conn.execute(
             "SELECT host, reachable, error, checked_at, down_since FROM host_status ORDER BY host"
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        for r in out:
+            r["reachable"] = bool(r["reachable"])
+        return out
 
 
 def purge_orphaned_hosts(configured_hosts: set[str]) -> int:

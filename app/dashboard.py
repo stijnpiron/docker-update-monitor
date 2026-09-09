@@ -83,8 +83,6 @@ def create_app() -> Flask:
                 host_status_rows.append({"host": name, "reachable": None, "error": None, "checked_at": None})
         host_status_rows.sort(key=lambda r: r["host"])
         for row in host_status_rows:
-            raw = row.get("reachable")
-            row["reachable"] = bool(raw) if isinstance(raw, int) else None
             row["checked_at_display"] = _format_datetime(row.get("checked_at"))
             # The "unreachable since" label shows the *transition* time (start of
             # the current outage), not the latest check (D2). Fall back to

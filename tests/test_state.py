@@ -947,9 +947,9 @@ class TestHostStatus:
         state.upsert_host_status("staging", False, "connection refused", "2026-01-01T00:00:00+00:00")
 
         rows = {row["host"]: row for row in state.get_host_status()}
-        assert rows["prod"]["reachable"] == 1
+        assert rows["prod"]["reachable"] is True
         assert rows["prod"]["error"] is None
-        assert rows["staging"]["reachable"] == 0
+        assert rows["staging"]["reachable"] is False
         assert rows["staging"]["error"] == "connection refused"
 
     def test_upsert_host_status_updates_existing_row(self):
@@ -958,7 +958,7 @@ class TestHostStatus:
 
         rows = state.get_host_status()
         assert len(rows) == 1
-        assert rows[0]["reachable"] == 1
+        assert rows[0]["reachable"] is True
         assert rows[0]["error"] is None
         assert rows[0]["checked_at"] == "2026-01-02T00:00:00+00:00"
 
@@ -969,7 +969,7 @@ class TestHostStatus:
                                  "2026-01-01T00:00:00+00:00",
                                  down_since="2026-01-01T00:00:00+00:00")
         row = state.get_host_status()[0]
-        assert row["reachable"] == 0
+        assert row["reachable"] is False
         assert row["down_since"] == "2026-01-01T00:00:00+00:00"
 
     def test_upsert_host_status_down_since_none_when_reachable(self):
@@ -979,7 +979,7 @@ class TestHostStatus:
                                  "2026-01-01T00:00:00+00:00",
                                  down_since="2026-01-01T00:00:00+00:00")
         row = state.get_host_status()[0]
-        assert row["reachable"] == 1
+        assert row["reachable"] is True
         assert row["down_since"] is None
 
     def test_upsert_host_status_default_down_since_is_none(self):

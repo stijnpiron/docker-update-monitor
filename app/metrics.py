@@ -115,6 +115,6 @@ def update_after_scan(
         for row in host_status:
             host = row["host"]
             reachable = row.get("reachable")
-            up = 1 if (reachable is True or reachable == 1) else 0
+            up = 1 if reachable else 0
             host_reachable.labels(host=host).set(up)
         _seen_hosts = set(current_hosts)

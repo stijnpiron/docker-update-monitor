@@ -54,12 +54,37 @@ WEB_PORT          = _int_env("WEB_PORT", 8080)
 DASHBOARD_DATETIME_FORMAT = os.environ.get("DASHBOARD_DATETIME_FORMAT", "%d/%m/%Y %H:%M")
 TZ                = os.environ.get("TZ", "")
 
-UPDATE_COOLDOWN   = os.environ.get("UPDATE_COOLDOWN", "0")
+# Raw env-var string the scanner parses (per-container label fallback + the
+# per-scan global cooldown). Normalized at import below (QA I5).
+UPDATE_COOLDOWN_RAW = os.environ.get("UPDATE_COOLDOWN", "0")
 
 # Valid host names: alphanumeric plus dot, underscore, and hyphen.
 _HOST_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 _DEFAULT_HOST_REACH_COOLDOWN = "1h"
+
+
+def _normalize_update_cooldown_env() -> str:
+    """Normalize an invalid ``UPDATE_COOLDOWN`` to ``0`` with a warning (QA I5).
+
+    The scanner's per-container cooldown *label* path already treats an invalid
+    value as "no cooldown" with a warning, but the global path had no guard —
+    a typo in ``UPDATE_COOLDOWN`` raised ``ValueError`` out of ``run_check()``
+    on every scan. Normalize at startup, mirroring ``_parse_host_reach_cooldown``,
+    so both paths share the same lenient semantics.
+    """
+    try:
+        parse_cooldown(UPDATE_COOLDOWN_RAW)
+        return UPDATE_COOLDOWN_RAW
+    except ValueError:
+        log.warning(
+            "Invalid UPDATE_COOLDOWN value %r, falling back to no cooldown (0)",
+            UPDATE_COOLDOWN_RAW,
+        )
+        return "0"
+
+
+UPDATE_COOLDOWN_RAW = _normalize_update_cooldown_env()
 
 
 def _parse_host_reach_cooldown() -> timedelta:

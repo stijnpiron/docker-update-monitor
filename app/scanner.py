@@ -98,9 +98,12 @@ def _resolve_digest_to_tag(
     return None
 
 
-# Bounded per-request socket timeout (seconds) for remote (SSH) Docker clients,
-# so an unresponsive host fails fast as unreachable instead of stalling the
-# whole check.
+# Socket timeout (seconds) for remote (SSH) Docker clients. Bounds I/O on the
+# *established* session only: docker-py shells out to the system `ssh` binary
+# with a fixed argv (no `-o ConnectTimeout` hook), so the initial TCP connect /
+# auth of the ssh subprocess itself is unbounded — a firewalled (silent-drop)
+# host can stall its slot for the OS default connect duration before failing
+# as unreachable.
 _HOST_CLIENT_TIMEOUT = 30
 
 # Last-seen reachability per host, carried across scans so that down/up
@@ -221,7 +224,7 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
         monitored_count += 1
 
         # Parse per-container cooldown label; fall back to global config
-        cooldown_label = labels.get(f"{_config.LABEL_PREFIX}.update-cooldown", _config.UPDATE_COOLDOWN)
+        cooldown_label = labels.get(f"{_config.LABEL_PREFIX}.update-cooldown", _config.UPDATE_COOLDOWN_RAW)
         try:
             container_cooldowns[container_name] = parse_cooldown(cooldown_label)
         except ValueError:
@@ -542,9 +545,10 @@ def _connect_host(host: str, url: str | None):
     """Open a Docker client for the given host.
 
     ``url is None`` → the local daemon (docker.from_env); otherwise an SSH
-    client with a bounded socket timeout so an unresponsive host fails fast as
-    unreachable instead of stalling the check. Raises ``DockerException`` on
-    connection failure.
+    client whose established-session I/O is bounded by
+    ``_HOST_CLIENT_TIMEOUT`` (the ssh subprocess's initial connect is not —
+    see that constant's comment). Raises ``DockerException`` on connection
+    failure.
     """
     if url is None:
         return docker.from_env()
@@ -765,7 +769,7 @@ def run_check() -> None:
     # surfaced by the web dashboard, but notifications are for actionable
     # (still-pending) updates, so they're excluded here.
     # Also apply cooldown — suppress new/known updates that haven't matured yet.
-    global_cooldown = parse_cooldown(_config.UPDATE_COOLDOWN)
+    global_cooldown = parse_cooldown(_config.UPDATE_COOLDOWN_RAW)
     actionable: list[UpdateInfo] = []
     for u in all_categorized:
         if u.status == "resolved":

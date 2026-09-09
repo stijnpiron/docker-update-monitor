@@ -87,6 +87,12 @@ services:
       #
       #   DOCKER_HOSTS: "${DOCKER_HOSTS:-prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host}"
       #   HOST_REACH_COOLDOWN: "${HOST_REACH_COOLDOWN}"   # re-alert window for a host down/recovered, e.g. "30m", "1h", "2d" (default "1h")
+      #
+      # Activating DOCKER_HOSTS also requires the "Multi-host SSH config"
+      # volume and the "Multi-host SSH keys" secrets blocks lower in this
+      # file — all three are commented out by default and none takes effect
+      # alone: hosts set but config/keys not mounted → every host is recorded
+      # unreachable with "ssh can't find a config/key", no other signal.
 
     ports:
       # Expose the web dashboard and /metrics endpoint

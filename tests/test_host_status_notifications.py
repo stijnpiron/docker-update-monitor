@@ -273,6 +273,24 @@ class TestHostAlertCoalescing:
         assert mock_webhook.call_count == 1
         mock_webhook.assert_called_once_with(_down("prod-1"))
 
+    @patch("app.notifications.host_status.webhook_host_updown")
+    def test_cooldown_boundary_fires_at_exactly_elapsed(self, mock_webhook):
+        """QA I2: the suppression check is strict-`<`, so a second
+        transition 1s inside the window is suppressed but one at *exactly*
+        the cooldown elapsed fires. Pins the off-by-one: flipping `<` to
+        `<=` suppresses the boundary call and fails this test."""
+        mock_webhook.return_value = True
+        with cfg_patcher(**_webhook_cfg()):
+            notify_host_status([_down("prod-1")], now=_T0)
+            # 59m59s elapsed — 1 second inside the 1h window: suppressed.
+            notify_host_status([_down("prod-1")], now=_T0 + timedelta(minutes=59, seconds=59))
+            # Exactly 1h elapsed: fires (strict-< boundary).
+            notify_host_status([_down("prod-1")], now=_T0 + timedelta(hours=1))
+
+        assert mock_webhook.call_count == 2
+        assert state_mod.get_event_last_fired("host:prod-1") == \
+            (_T0 + timedelta(hours=1)).isoformat()
+
     @patch("app.scanner.notify_host_status")
     @patch("app.scanner.notify")
     @patch("app.scanner.get_dockerhub_token", return_value="tok")

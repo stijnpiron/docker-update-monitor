@@ -181,3 +181,30 @@ class TestHostReachCooldown:
     def test_host_reach_cooldown_custom(self, monkeypatch, restore_config):
         cfg = _reload_config(monkeypatch, HOST_REACH_COOLDOWN="4h")
         assert cfg.HOST_REACH_COOLDOWN == timedelta(hours=4)
+
+
+class TestUpdateCooldownEnv:
+    """QA I5 — UPDATE_COOLDOWN gets the same fail-fast-at-startup validation.
+
+    The raw string is what the scanner parses; a bad value must not survive
+    past import (it used to raise ValueError out of run_check() on every scan).
+    """
+
+    def test_valid_value_preserved(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, UPDATE_COOLDOWN="12h")
+        assert cfg.UPDATE_COOLDOWN_RAW == "12h"
+
+    def test_unset_defaults_to_zero(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, UPDATE_COOLDOWN=None)
+        assert cfg.UPDATE_COOLDOWN_RAW == "0"
+
+    def test_invalid_value_normalized_to_zero_with_warning(
+        self, monkeypatch, caplog, restore_config
+    ):
+        with caplog.at_level(logging.WARNING, logger="dum"):
+            cfg = _reload_config(monkeypatch, UPDATE_COOLDOWN="bogus")
+        assert cfg.UPDATE_COOLDOWN_RAW == "0"
+        assert any(
+            "Invalid UPDATE_COOLDOWN" in record.getMessage() and "bogus" in record.getMessage()
+            for record in caplog.records
+        )

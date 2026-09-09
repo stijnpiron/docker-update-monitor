@@ -714,8 +714,8 @@ class TestMultiHostDashboard:
         assert isinstance(data, list)
         rows = {r["host"]: r for r in data}
         assert set(rows) == {"local", "prod"}
-        assert rows["local"]["reachable"] == 1
-        assert rows["prod"]["reachable"] == 0
+        assert rows["local"]["reachable"] is True
+        assert rows["prod"]["reachable"] is False
         assert rows["prod"]["error"] == "ssh: timeout"
 
     def test_single_local_host_no_regressions(self, client):
