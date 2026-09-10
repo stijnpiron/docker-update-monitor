@@ -23,9 +23,16 @@ RUN apt-get update \
 # harmless when multi-host SSH is disabled.
 RUN usermod -d /home/ssh nobody
 
-# Install dependencies
+# Install dependencies. paramiko's pynacl/cryptography/bcrypt deps have no
+# prebuilt wheels yet for this Python version, so pip falls back to a source
+# build — needs a C compiler + libffi headers. Purged in the same layer so the
+# final image doesn't carry a build toolchain.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libffi-dev \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove gcc libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app/ app/
 
