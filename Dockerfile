@@ -29,6 +29,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
 
+# Persistent state lives in /app/data (STATE_DB_PATH). The container runs as
+# `nobody`, so pre-create the dir owned by it — otherwise SQLite can't create
+# state.db and its WAL sidecar ("unable to open database file"). A named volume
+# inherits this ownership; a host bind mount does NOT (the host dir's owner
+# wins), so bind-mount users must `chown 65534:65534 ./data` on the host.
+RUN mkdir -p /app/data && chown nobody:nogroup /app/data
+
 # Run as non-root but still needs socket access → add to group via docker-compose.
 # With multi-host SSH the container also reads a shared read-only ~/.ssh/config
 # (mounted at /home/ssh/.ssh, with HOME=/home/ssh) plus one Docker-secret key

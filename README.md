@@ -218,10 +218,10 @@ By default the monitor scans only the local Docker socket. Set `DOCKER_HOSTS` to
 also scan one or more remote daemons over SSH from this single instance, all on
 the same `CRON_SCHEDULE`:
 
-| Variable              | Default   | Description                                                                                                                                                                                                                                                                                                                                                                   |
-| --------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DOCKER_HOSTS`        | _(empty)_ | Comma-separated `name=ssh://user@host` pairs scanned in addition to the local daemon. Each `name` is the stable per-host label (shown in the dashboard and notifications), restricted to `A-Za-z0-9._-`, and must be unique and not collide with the local daemon's name (see `LOCAL_HOST_NAME`). Only the `ssh://` scheme is supported. When unset, behavior is identical to before this feature (local only). |
-| `HOST_REACH_COOLDOWN` | `1h`      | Re-alert window for a host down/recovered alert. Accepted formats: `15m`, `1h`, `2d`, `1w`. A repeat transition for the same host inside this window is coalesced (no new alert); after it elapses the alert refires.                                                                                                                                                         |
+| Variable              | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKER_HOSTS`        | _(empty)_ | Comma-separated `name=ssh://user@host` pairs scanned in addition to the local daemon. Each `name` is the stable per-host label (shown in the dashboard and notifications), restricted to `A-Za-z0-9._-`, and must be unique and not collide with the local daemon's name (see `LOCAL_HOST_NAME`). Only the `ssh://` scheme is supported. When unset, behavior is identical to before this feature (local only).                                                                                                                                                                                                                                                            |
+| `HOST_REACH_COOLDOWN` | `1h`      | Re-alert window for a host down/recovered alert. Accepted formats: `15m`, `1h`, `2d`, `1w`. A repeat transition for the same host inside this window is coalesced (no new alert); after it elapses the alert refires.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `LOCAL_HOST_NAME`     | `local`   | Label used for the local daemon in the dashboard, webhook payloads, and the `host` Prometheus label (where the default `local` used to appear). Same character set and uniqueness rules as `DOCKER_HOSTS` names — a remote host cannot reuse it (fails fast at startup). When you first set a new value, a one-time data migration renames the `local` rows already stored in `data/state.db` so existing update history, host-status rows, and down/recovered alert continuity follow the new name. Set it in your secret manager (Infisical or similar) alongside the other `DOCKER_HOSTS`-related values; it is a plain env var like every other setting in this table. |
 
 **Working example** — scan the local daemon plus two remote hosts:
@@ -240,7 +240,7 @@ LOCAL_HOST_NAME=home-node
 
 The value lives in the same `.env` (or Infisical) as `DOCKER_HOSTS`; no code
 or image change is required. `local` remains a perfectly good name for a
-*remote* host once the local daemon has been renamed.
+_remote_ host once the local daemon has been renamed.
 
 **Validation (fail fast at startup).** A malformed `DOCKER_HOSTS` value — a pair
 missing `=`, a duplicate host name, a name equal to the local daemon's name
@@ -257,32 +257,20 @@ system `ssh` binary resolves identity per host from a standard `~/.ssh/config`
 — no key material ever appears in `DOCKER_HOSTS`. There are at most two machines
 you touch per remote host:
 
-| Machine | Role | What you do here |
-| ------- | ---- | ----------------- |
-| **Monitor host** — the box running the `docker compose` service | Client side | Set the env vars, create the SSH config + per-host key files, mount them, (re)start the service |
-| **Remote Docker host** — e.g. `prod-host` | Server side | Ensure the user you SSH in as can run `docker` commands (i.e. is root or in the `docker` group), and that user's `authorized_keys` contains the monitor's public key |
+| Machine                                                         | Role        | What you do here                                                                                                                                                     |
+| --------------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Monitor host** — the box running the `docker compose` service | Client side | Set the env vars, create the SSH config + per-host key files, mount them, (re)start the service                                                                      |
+| **Remote Docker host** — e.g. `prod-host`                       | Server side | Ensure the user you SSH in as can run `docker` commands (i.e. is root or in the `docker` group), and that user's `authorized_keys` contains the monitor's public key |
 
 Work through it in order. Replace `prod-host`, `monitor`, and `ssh_prod_key`
-with your own values.
+with your own values. Step 1 creates the key; step 2 installs its public half
+on each remote — that's the step the `authorized_keys` line in the table above
+refers to.
 
-**1. Remote Docker host — allow key SSH for the monitor user.** On the remote
-box, make sure the account the monitor will log in as (e.g. `monitor`) has SSH
-public-key auth enabled and has an `authorized_keys` entry for the client key
-you're about to create. If you use a single dedicated `monitor` account per
-fleet you can use one public key here; the per-remote-host key isolation
-(desired for blast-radius) is enforced *on the monitor host* in step 2 (one
-private key per `Host` block), not by requiring different remote accounts.
-
-```bash
-# on the remote host, as target user (e.g. monitor)
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-chmod 600 ~/.ssh/authorized_keys   # 644 also works; 700/600 is conventional
-# append the client public key (generated in the next step) here
-```
-
-**2. Monitor host — generate one private key per remote host.** One key per
+**1. Monitor host — generate one private key per remote host.** One key per
 remote host so a leaked key only exposes one daemon. Create them on the monitor
-host (their paths are the `./config/ssh/…` files the compose service mounts):
+host (their paths are the `./config/ssh/…` files the compose service mounts in
+step 5). Do this first, because step 2 installs each remote's _public_ half.
 
 ```bash
 # on the monitor host
@@ -292,15 +280,72 @@ ssh-keygen -t ed25519 -N '' -f ./config/ssh/ssh_prod_key     # private  (keep 60
 # ssh-keygen -t ed25519 -N '' -f ./config/ssh/ssh_nas_key
 ```
 
-Copy each `*.pub` to the matching remote host's `~/.ssh/authorized_keys` (step 1).
-You generate these **on the monitor host**, not on the remote — that's the only
-place the private key needs to exist.
+**2. Remote Docker host — install the public key (and allow docker).** Install
+each remote's public half into that host's `authorized_keys`, and confirm the
+account can reach the daemon. Run this **from the monitor host** — it `ssh`es
+out to the remote, so it changes the remote box.
 
-**3. Monitor host — write the shared SSH config + a writable known_hosts.** The
-config maps each `Host <alias>` to its per-host key and to the pinned
-`known_hosts`. `UserKnownHostsFile` + `StrictHostKeyChecking accept-new` is the
+```bash
+# on the monitor host — install prod-host's public half
+ssh-copy-id -i ./config/ssh/ssh_prod_key.pub monitor@prod-host
+# one per remote host:
+# ssh-copy-id -i ./config/ssh/ssh_nas_key.pub  monitor@nas-host
+```
+
+If you don't have `ssh-copy-id`, the equivalent is:
+
+```bash
+ssh monitor@prod-host 'umask 077; mkdir -p ~/.ssh'
+cat ./config/ssh/ssh_prod_key.pub | ssh monitor@prod-host \
+    'cat >> ~/.ssh/authorized_keys'
+```
+
+The first connection to each host will normally ask for that account's password
+once; key auth (what the monitor uses afterwards) then needs no password.
+If it instead fails with `Permission denied (publickey)` and _never_ asks for a
+password, the remote's sshd has password auth disabled — `ssh-copy-id` needs one
+interactive login to bootstrap, so install the public half through a channel
+that already gets onto the box (a root/other key, the console, or a temporarily
+re-enabled password), e.g. from the monitor host:
+
+```bash
+cat ./config/ssh/ssh_prod_key.pub | ssh root@prod-host \
+    'install -d -m 700 -o monitor -g monitor /home/monitor/.ssh
+     touch /home/monitor/.ssh/authorized_keys
+     chown monitor:monitor /home/monitor/.ssh/authorized_keys
+     chmod 644 /home/monitor/.ssh/authorized_keys
+     cat >> /home/monitor/.ssh/authorized_keys'
+```
+
+Note: a group- or world-writable `authorized_keys` makes the remote sshd reject
+the key — keep `~/.ssh` at `700` and `authorized_keys` at `600`/`644`.
+
+Give the account docker access (run on the **remote** host, as root):
+
+```bash
+usermod -aG docker monitor
+```
+
+Then prove the whole client path works before you wire up compose — this is the
+same call the monitor makes, and it must print a version:
+
+```bash
+ssh -i ./config/ssh/ssh_prod_key -o BatchMode=yes monitor@prod-host \
+    'docker version --format "{{.Server.Version}}"'
+```
+
+If that prints a version, the remote side is fully ready. The private key only
+ever exists on the monitor host; each remote gets only the public half that
+corresponds to it. Blast-radius isolation comes from one private key per `Host`
+block, not from separate remote accounts — a single dedicated `monitor` account
+per fleet is fine.
+
+**3. Monitor host — write the shared SSH config + a writable
+`known_hosts`.** Two files, both on the monitor host. The config maps each
+`Host <alias>` to its per-host key and to the pinned `known_hosts`.
+`UserKnownHostsFile` + `StrictHostKeyChecking accept-new` is the
 **default, recommended** setup — it records each remote's host key on first
-contact (one warning) and afterwards *refuses* a connection whose host key has
+contact (one warning) and afterwards _refuses_ a connection whose host key has
 changed (the change is recorded, the host is marked `unreachable`). This is
 stronger than the old read-only default, which only warned and never verified.
 
@@ -317,13 +362,23 @@ Host nas-host
     StrictHostKeyChecking accept-new
     UserKnownHostsFile /home/ssh/known_hosts
 EOF
-touch ./config/ssh/known_hosts          # starts empty; ssh fills it in
+touch ./config/ssh/known_hosts          # starts EMPTY on purpose
 ```
 
-Each `Host <alias>` **must match** the host `name` in `DOCKER_HOSTS` (step 4).
-The two file paths below (`/run/secrets/…`, `/home/ssh/known_hosts`) are
-in-container paths — the *source* files on the monitor host are the relative
-`./config/ssh/…` paths, wired up in step 5.
+- The second file, `./config/ssh/known_hosts`, gets **nothing from you — it
+  starts empty on purpose**. On the first connection, `accept-new` records each
+  remote's host key into it automatically (you'll see one warning per host in
+  the logs); afterwards every connection is checked against the recorded key
+  and a mismatch is refused. Leave the file writable (that's what lets ssh
+  write into it). You can inspect it any time — one line per host, e.g.
+  `prod-host ssh-ed25519 AAAA...`. **Never** hand-edit it, and if a host key
+  _legitimately_ changes (host rebuilt), delete just that one line — or the
+  host will stay `unreachable`.
+- Each `Host <alias>` **must match** the host `name` in `DOCKER_HOSTS`
+  (step 4).
+- The paths inside the config (`/run/secrets/…`, `/home/ssh/known_hosts`) are
+  **in-container** paths; the _source_ files on the monitor host are the
+  relative `./config/ssh/…` paths, wired to those container paths in step 5.
 
 **4. Monitor host — set the environment variables.** In the `.env` file next to
 `docker-compose.yml` (or your Infisical/secret store that injects the service's
@@ -338,7 +393,11 @@ HOST_REACH_COOLDOWN=1h
 
 **5. Monitor host — wire the volumes, secrets, and service env in
 `docker-compose.yml`.** Uncomment/enable the three commented blocks in
-`docker-compose.yml`:
+`docker-compose.yml`. Every `./config/ssh/…` path below resolves **relative to
+the compose file itself** — the keys, the SSH config, and `known_hosts` must
+live in a `config/ssh/` directory _next to the `docker-compose.yml` you
+deploy_, not in your `~` (files built elsewhere fail at deploy with
+`bind source path does not exist: …/config/ssh/…`).
 
 - the service `environment` line for `DOCKER_HOSTS` (and, optionally,
   `LOCAL_HOST_NAME`),
@@ -351,13 +410,15 @@ The exact entries are commented in `docker-compose.yml`; together they become:
 
 ```yaml
 volumes:
-  - ./config/ssh/.ssh:/home/ssh/.ssh:ro              # config is read-only
-  - ./config/ssh/known_hosts:/home/ssh/known_hosts   # writable (no :ro) → pinning works
+  - ./config/ssh/.ssh:/home/ssh/.ssh:ro # config is read-only
+  - ./config/ssh/known_hosts:/home/ssh/known_hosts # writable (no :ro) → pinning works
 secrets:
   - ssh_prod_key
   - ssh_nas_key
 ```
+
 and at top level:
+
 ```yaml
 secrets:
   ssh_prod_key:
@@ -369,8 +430,8 @@ secrets:
 **Why the key's permissions are not a problem with `file:` secrets.** A Docker
 `file:` secret is published into the container as `root:root 0444` regardless of
 the host file's mode, and the container runs `ssh` as `nobody` (uid 65534).
-OpenSSH's private-key safety check only rejects a key that is *owned by the
-running user* and world/group-readable — here the owner (root) differs from the
+OpenSSH's private-key safety check only rejects a key that is _owned by the
+running user_ and world/group-readable — here the owner (root) differs from the
 running user (nobody), so the check is skipped and the 0444 file (readable)
 is used normally. You therefore do **not** need to `chmod 644` the host key for
 the standard `file:`-secret path. (Caveat: if you instead **bind-mount** a key
