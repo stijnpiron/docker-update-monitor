@@ -79,7 +79,9 @@ services:
       # Format: comma-separated "name=ssh://user@host" pairs. The name is the
       # stable per-host label shown in the dashboard and notifications and must
       # match a `Host <alias>` block in the shared OpenSSH config mounted below
-      # (see the volumes/secrets notes). `local` is reserved for the local daemon.
+      # (see the volumes/secrets notes). The local daemon's own label is
+      # configurable via LOCAL_HOST_NAME (default "local") — a remote name may
+      # not collide with it (fails fast at startup).
       # No HOME override is needed: the image sets user `nobody`'s home directory
       # to /home/ssh so the OpenSSH client finds /home/ssh/.ssh/config by default.
       #
@@ -87,6 +89,7 @@ services:
       #
       #   DOCKER_HOSTS: "${DOCKER_HOSTS:-prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host}"
       #   HOST_REACH_COOLDOWN: "${HOST_REACH_COOLDOWN}"   # re-alert window for a host down/recovered, e.g. "30m", "1h", "2d" (default "1h")
+      #   LOCAL_HOST_NAME: "${LOCAL_HOST_NAME:-local}"    # label of the local daemon (dashboard, webhooks, metrics); renaming it migrates existing "local" rows in data/state.db on first run
       #
       # Activating DOCKER_HOSTS also requires the "Multi-host SSH config"
       # volume and the "Multi-host SSH keys" secrets blocks lower in this
@@ -111,45 +114,55 @@ services:
       # flag) reads /home/ssh/.ssh/config by default — no HOME env override is
       # needed. Each `Host <alias>` block maps its host to a per-host key (a
       # /run/secrets/ path, see the secrets below). The mounted directory and
-      # the config file must be readable by the container user `nobody`. Note
-      # the mount is read-only, so `accept-new` host-key entries cannot
-      # persist: every connection to a host whose key is not recorded
-      # prints "Failed to add the host to the list of known hosts" and
-      # continues — the key is never recorded and never verified. For real
-      # host-key pinning, mount a writable `known_hosts` file separately
-      # (without `:ro`) and point `UserKnownHostsFile` in the config at it
-      # (e.g.
-      # `- ./config/ssh/known_hosts:/home/ssh/known_hosts`): with
-      # `accept-new`, first contact records the key (a one-time warning),
-      # later connects are silent, and a host that changes its key thereafter
-      # fails the connection hard with "Host key verification failed" and is
-      # recorded unreachable. Do not use `UserKnownHostsFile /dev/null` to
-      # "suppress" the warning — writes to /dev/null always succeed, so ssh
-      # prints "Permanently added …" on **every** connect instead, while
-      # recording nothing.
-      # Example ./config/ssh/.ssh/config:
+      # the config file must be readable by the container user `nobody`.
+      #
+      # Host KEY PINNING (the default here): each `Host` block points
+      # UserKnownHostsFile at a WRITABLE known_hosts file. `accept-new` records
+      # the remote's host key on first contact (a one-time log warning), later
+      # connects are silent, and a host that changes its key thereafter fails
+      # hard ("Host key verification failed") and is recorded unreachable.
+      # Mount known_hosts WITHOUT `:ro` (below) — a read-only mount can never
+      # record the key (every connect warns and nothing is ever verified).
+      # Do NOT point UserKnownHostsFile at /dev/null to "quiet" the warning:
+      # writes to /dev/null always succeed, so ssh prints "Permanently added"
+      # on every connect while recording nothing.
+      #
+      # Example ./config/ssh/.ssh/config (the `Host` name must match the host
+      # name in DOCKER_HOSTS):
       #
       #   Host prod-host
       #       IdentityFile /run/secrets/ssh_prod_key
       #       StrictHostKeyChecking accept-new
+      #       UserKnownHostsFile /home/ssh/known_hosts
       #
       #   Host nas-host
       #       IdentityFile /run/secrets/ssh_nas_key
       #       StrictHostKeyChecking accept-new
+      #       UserKnownHostsFile /home/ssh/known_hosts
+      #
+      # Mounts (enable when DOCKER_HOSTS is set): config read-only,
+      # known_hosts WRITABLE so pinning works.
       #
       # - ./config/ssh/.ssh:/home/ssh/.ssh:ro
+      # - ./config/ssh/known_hosts:/home/ssh/known_hosts
 
     # Needed so 'nobody' user can access the Docker socket
     group_add:
       - "${DOCKER_GID:-999}"
 
     # --- Multi-host SSH keys (optional; enable when DOCKER_HOSTS is set) ---
-    # One read-only secret per remote host, referenced by the Host blocks in the
-    # mounted config. Each secret is mounted at /run/secrets/<name>. Using a key
-    # per host limits blast radius if one host/key is compromised. The source
-    # private-key files MUST be readable by `nobody` (chmod 644) or the scan
-    # fails with an auth/permission error and the host is marked unreachable —
-    # a clear, fixable failure, not a silent no-op.
+    # One read-only `file:` secret per remote host, referenced by the Host
+    # blocks in the mounted config. Each is mounted at /run/secrets/<name>.
+    # A key per host limits blast radius if one host/key is compromised.
+    #
+    # Permissions: `file:` secrets are published in the container as
+    # root:root 0444 regardless of the host file's mode, and ssh runs as
+    # `nobody` (uid 65534). OpenSSH only rejects a private key that is owned
+    # BY the running user and world/group-readable — the owner (root) differs
+    # from the running user (nobody), so the check is skipped and the readable
+    # 0444 file is used. You do NOT need to change the host key's mode.
+    # (Caveat: if you bind-mount a key instead of a `file:` secret, the
+    # in-container owner/mode are the host file's own — see README "SSH setup".)
     #
     # secrets:
     #   - ssh_prod_key
@@ -164,12 +177,12 @@ services:
 
 # --- Multi-host SSH keys (optional; top-level `secrets`) ---
 # Define each per-host private key here and enable it in the service `secrets:`
-# list above. Each entry maps a file on the Docker host to a read-only
-# /run/secrets/<name> in the container. Source files must be `chmod 644` so the
-# `nobody` user can read them.
+# list above. Each `file:` entry maps a key on the Docker host to a read-only
+# /run/secrets/<name> in the container (published root:root 0444, which ssh
+# running as `nobody` can read — see the service secrets comment).
 #
 # secrets:
 #   ssh_prod_key:
-#     file: ./config/ssh/ssh_prod_key   # private key for prod-host  (chmod 644)
+#     file: ./config/ssh/ssh_prod_key   # private key for prod-host
 #   ssh_nas_key:
-#     file: ./config/ssh/ssh_nas_key    # private key for nas-host   (chmod 644)
+#     file: ./config/ssh/ssh_nas_key    # private key for nas-host

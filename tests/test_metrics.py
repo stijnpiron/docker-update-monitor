@@ -67,13 +67,6 @@ class TestUpdateAfterScanGauges:
         assert updates_available.labels(type="patch", host="local")._value.get() == 2.0
         assert updates_available.labels(type="minor", host="local")._value.get() == 1.0
 
-    def test_counts_updates_by_type_from_update_info_objects(self):
-        u1 = UpdateInfo("c1", "s", "st", "img", "1.0", "2.0", "major", status="new")
-        u2 = UpdateInfo("c2", "s", "st", "img", "1.0", "1.1", "minor", status="known")
-        update_after_scan(monitored=2, updates=[u1, u2], duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="major", host="local")._value.get() == 1.0
-        assert updates_available.labels(type="minor", host="local")._value.get() == 1.0
-
     def test_resolved_updates_excluded_from_count(self):
         updates = [{"status": "resolved", "update_type": "major"}]
         update_after_scan(monitored=1, updates=updates, duration_seconds=0.0, last_check_ts=0.0)

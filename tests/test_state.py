@@ -853,6 +853,61 @@ class TestConnectionCaching:
         assert state._conn is conn
 
 
+class TestLocalHostRename:
+    """LOCAL_HOST_NAME: on first connect with a non-default name, the legacy
+    'local' rows are renamed in the DB (migrations.rename_local_host_rows)."""
+
+    @staticmethod
+    def _reconnect():
+        """Simulate a process restart: drop the cached connection so the next
+        state call re-opens the same DB file and re-runs schema + migrations.
+        (The autouse fixture in conftest gives every test exactly one fresh
+        connection — the simulated restarts happen within the test.)"""
+        if state._conn is not None:
+            state._conn.close()
+        state._conn = None
+        state._conn_path = None
+
+    def test_first_connect_renames_legacy_local_rows(self):
+        # 1) First connect (default LOCAL_HOST_NAME) writes 'local' rows.
+        state.process_scan([_make_update()], scan_time=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        state.upsert_host_status("local", True, None, "2026-01-01T00:00:00+00:00")
+        assert state.get_active_updates()[0]["host"] == "local"
+        assert [r["host"] for r in state.get_host_status()] == ["local"]
+
+        # 2) Operator sets LOCAL_HOST_NAME; the process restarts and the new
+        # connection re-runs the one-shot rename over the same DB file.
+        self._reconnect()
+        with patch("app.config.LOCAL_HOST_NAME", "home-node"):
+            assert state.get_active_updates()[0]["host"] == "home-node"
+            assert [r["host"] for r in state.get_host_status()] == ["home-node"]
+
+        # 3) Restart again — the marker makes the rename a no-op, no dupes.
+        self._reconnect()
+        with patch("app.config.LOCAL_HOST_NAME", "home-node"):
+            rows = state.get_active_updates()
+            assert len(rows) == 1 and rows[0]["host"] == "home-node"
+
+    def test_noop_when_local_host_name_is_default(self):
+        state.process_scan([_make_update()], scan_time=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        marker = state._connect().execute(
+            "SELECT value FROM metadata WHERE key = 'local_host_renamed_to'"
+        ).fetchone()
+        assert marker is None
+        assert state.get_active_updates()[0]["host"] == "local"
+
+    def test_remote_rows_survive_the_rename(self):
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        state.process_scan([_make_update(host="local")], scan_time=t)
+        state.process_scan([_make_update(host="prod")], scan_time=t, host="prod")
+        assert {r["host"] for r in state.get_active_updates()} == {"local", "prod"}
+
+        # Restart with the local daemon renamed — only the 'local' rows move.
+        self._reconnect()
+        with patch("app.config.LOCAL_HOST_NAME", "home-node"):
+            assert {r["host"] for r in state.get_active_updates()} == {"home-node", "prod"}
+
+
 class TestHostScope:
     """Task 03: containers that collide across hosts must be fully isolated."""
 

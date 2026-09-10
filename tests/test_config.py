@@ -24,9 +24,11 @@ def _reload_config(monkeypatch, **env):
 def restore_config():
     """Reload config back to current process env after each test."""
     yield
-    # An invalid DOCKER_HOSTS value raises SystemExit at import time, so clear
-    # it before reloading to avoid corrupting module state for later tests.
+    # An invalid DOCKER_HOSTS/LOCAL_HOST_NAME value raises SystemExit at import
+    # time, so clear it before reloading to avoid corrupting module state for
+    # later tests.
     os.environ.pop("DOCKER_HOSTS", None)
+    os.environ.pop("LOCAL_HOST_NAME", None)
     importlib.reload(config_mod)
 
 
@@ -162,6 +164,56 @@ class TestDockerHosts:
         assert len(names) == len(set(names))
         assert "local" not in names[1:]
         assert all(url.startswith("ssh://") for url in urls[1:])
+
+
+class TestLocalHostName:
+    """LOCAL_HOST_NAME — the label the local daemon (url None) is scanned under."""
+
+    def test_default_is_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, LOCAL_HOST_NAME=None)
+        assert cfg.LOCAL_HOST_NAME == "local"
+        assert cfg.DOCKER_HOSTS == [("local", None)]
+
+    def test_rename_local_entry(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, LOCAL_HOST_NAME="home-node")
+        assert cfg.LOCAL_HOST_NAME == "home-node"
+        assert cfg.DOCKER_HOSTS == [("home-node", None)]
+
+    def test_rename_with_remote_hosts(self, monkeypatch, restore_config):
+        cfg = _reload_config(
+            monkeypatch,
+            LOCAL_HOST_NAME="home-node",
+            DOCKER_HOSTS="prod=ssh://a",
+        )
+        assert cfg.DOCKER_HOSTS == [("home-node", None), ("prod", "ssh://a")]
+
+    def test_whitespace_only_falls_back_to_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, LOCAL_HOST_NAME="   ")
+        assert cfg.LOCAL_HOST_NAME == "local"
+
+    def test_invalid_characters_rejected(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, LOCAL_HOST_NAME="my host")
+
+    def test_collision_with_remote_host_rejected(self, monkeypatch, restore_config):
+        # A remote entry using the renamed local name must fail fast, same as
+        # the default-name collision.
+        with pytest.raises(SystemExit):
+            _reload_config(
+                monkeypatch,
+                LOCAL_HOST_NAME="prod",
+                DOCKER_HOSTS="prod=ssh://a",
+            )
+
+    def test_remote_local_name_allowed_after_rename(self, monkeypatch, restore_config):
+        # Once the local daemon has a different name, `local` is a legal name
+        # for a REMOTE host; it is not reserved any more.
+        cfg = _reload_config(
+            monkeypatch,
+            LOCAL_HOST_NAME="home-node",
+            DOCKER_HOSTS="local=ssh://weird",
+        )
+        assert cfg.DOCKER_HOSTS == [("home-node", None), ("local", "ssh://weird")]
 
 
 class TestHostReachCooldown:

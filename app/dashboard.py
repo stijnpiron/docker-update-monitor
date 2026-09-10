@@ -92,17 +92,12 @@ def create_app() -> Flask:
             )
             row["badge_class"] = _host_badge_class(row.get("host") or "local")
 
-        # Attach the deterministic badge class to each update + skipped row
-        # once in Python so the template does not need access to the helper.
-        for u in updates:
-            u["host"] = u.get("host") or "local"
-            u["host_badge_class"] = _host_badge_class(u["host"])
-        for c in skipped_containers:
-            c["host"] = c.get("host") or "local"
-            c["host_badge_class"] = _host_badge_class(c["host"])
-        for w in warnings:
-            w["host"] = w.get("host") or "local"
-            w["host_badge_class"] = _host_badge_class(w["host"])
+        # Attach the deterministic badge class to each update / skipped /
+        # warning row once in Python so the template doesn't need the helper.
+        for rows in (updates, skipped_containers, warnings):
+            for row in rows:
+                row["host"] = row.get("host") or "local"
+                row["host_badge_class"] = _host_badge_class(row["host"])
 
         # Sort skipped + warnings by host, stack, name (task 06)
         skipped_containers.sort(key=lambda c: (c["host"], c.get("stack") or "", c.get("container_name") or ""))
@@ -166,18 +161,16 @@ def create_app() -> Flask:
     return application
 
 
-def start_dashboard(host: str = "0.0.0.0", port: int | None = None) -> threading.Thread:
+def start_dashboard() -> None:
     """Start the Flask dashboard in a daemon thread using waitress."""
     from waitress import serve
 
-    if port is None:
-        port = _config.WEB_PORT
+    host = "0.0.0.0"
+    port = _config.WEB_PORT
 
     application = create_app()
-    thread = threading.Thread(
+    threading.Thread(
         target=lambda: serve(application, host=host, port=port, _quiet=True),
         daemon=True,
-    )
-    thread.start()
+    ).start()
     _config.log.info(f"Dashboard listening on http://{host}:{port}")
-    return thread

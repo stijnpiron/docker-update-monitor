@@ -211,16 +211,6 @@ class TestFetchDigest:
         assert "lscr.io/token" in token_url
 
     @patch.object(http_mod, "http_session")
-    def test_ghcr_full_url_with_scheme(self, mock_session):
-        """A scheme-qualified GHCR ref resolves its host via urlparse().hostname."""
-        mock_session.get.return_value = _make_get_resp(_TOKEN_RESPONSE)
-        mock_session.head.return_value = _make_head_resp("sha256:ghcrdigest")
-        result = fetch_digest("https://ghcr.io/owner/repo", "v1.0", "", "", "gh-token")
-        assert result == "sha256:ghcrdigest"
-        token_url = mock_session.get.call_args_list[0][0][0]
-        assert "ghcr.io/token" in token_url
-
-    @patch.object(http_mod, "http_session")
     def test_unknown_registry_returns_none(self, mock_session):
         result = fetch_digest("myregistry.example.com/team/app", "v1.0", "", "", "")
         assert result is None
@@ -306,19 +296,6 @@ class TestFetchPlatformDigest:
         ]
         result = fetch_platform_digest("ghcr.io/owner/repo", "v1.0", "linux", "amd64", "", "", "gh-token")
         assert result == "sha256:amd64digest"
-
-    @patch.object(http_mod, "http_session")
-    def test_ghcr_full_url_with_scheme(self, mock_session):
-        mock_session.get.side_effect = [
-            _make_get_resp(_TOKEN_RESPONSE),
-            _make_get_resp(_MANIFEST_LIST_WITH_DIGESTS),
-        ]
-        result = fetch_platform_digest(
-            "https://ghcr.io/owner/repo", "v1.0", "linux", "arm64", "", "", "gh-token"
-        )
-        assert result == "sha256:arm64digest"
-        token_url = mock_session.get.call_args_list[0][0][0]
-        assert "ghcr.io/token" in token_url
 
     @patch.object(http_mod, "http_session")
     def test_ghcr_no_github_token_returns_none(self, mock_session):

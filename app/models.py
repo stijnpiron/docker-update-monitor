@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -16,17 +16,6 @@ class UpdateInfo:
 
 
 @dataclass
-class HostStatus:
-    # Reachability snapshot for a single host, recorded each scan cycle.
-    host: str
-    reachable: bool
-    # Populated only when reachable is False (by convention, not the type).
-    error: str | None
-    # ISO-8601 UTC, same convention as other timestamps in the project.
-    checked_at: str
-
-
-@dataclass
 class HostStatusEvent:
     """A host reachability transition detected between two scan cycles.
 
@@ -39,17 +28,12 @@ class HostStatusEvent:
     # Populated only for "down" events (by convention, not the type).
     error: str | None = None
 
-
-@dataclass
-class RegexMismatch:
-    container_name: str
-    service_name: str
-    stack: str
-    image: str
-    current_tag: str
-    pattern: str
-    reason: str             # e.g. "did not match current tag"
-    host: str = "local"     # which host this mismatch belongs to (see DOCKER_HOSTS)
+    @property
+    def summary(self) -> str:
+        """Human-readable one-line summary, shared by every notification channel."""
+        if self.event == "recovered":
+            return f"Host recovered: {self.host}"
+        return f"Host down: {self.host} — {self.error or 'unreachable'}"
 
 
 @dataclass

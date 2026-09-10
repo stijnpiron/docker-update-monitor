@@ -1,11 +1,10 @@
 import sqlite3
 import threading
-from copy import copy
 from datetime import datetime, timezone
 from pathlib import Path
 
 import app.config as _config
-from app.migrations import run_migrations
+from app.migrations import run_migrations, rename_local_host_rows
 from app.models import UpdateInfo
 from app.version import parse_tag
 
@@ -96,6 +95,9 @@ def _connect() -> sqlite3.Connection:
     conn.execute(_HOST_STATUS_SCHEMA)
     conn.execute(_EVENT_COOLDOWNS_SCHEMA)
     run_migrations(conn)
+    # Legacy 'local' rows follow the renamed local daemon (LOCAL_HOST_NAME).
+    # Idempotent — runs at most once per DB, marker in the metadata table.
+    rename_local_host_rows(conn, _config.LOCAL_HOST_NAME)
     conn.commit()
 
     _conn = conn

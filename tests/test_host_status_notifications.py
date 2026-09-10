@@ -1,7 +1,7 @@
 """Tests for host-aware notifications (task 05).
 
 Covers:
-- AC1: webhook payload rows (update / mismatch / warning + host_status) carry host.
+- AC1: webhook payload rows (update / warning + host_status) carry host.
 - AC2: email HTML and plain-text include a Host column; rows ordered by (host, stack, image).
 - AC3: a host transitioning to unreachable emits exactly one down alert.
 - AC4: a recovering host emits a "recovered" alert.
@@ -20,11 +20,11 @@ from app import config as config_mod
 from app import http as http_mod
 from app import scanner as scanner_mod
 from app import state as state_mod
-from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatusEvent
+from app.models import UpdateInfo, ScanWarning, HostStatusEvent
 from app.notifications import notify_host_status
 from app.notifications.webhook import notify as webhook_notify, host_updown as webhook_host_updown
 from app.notifications.email import (
-    _build_html, _build_plain, _build_mismatch_section_html, _build_warnings_section_html,
+    _build_html, _build_plain, _build_warnings_section_html,
 )
 
 
@@ -58,21 +58,6 @@ def _make_update(**kwargs):
     )
     defaults.update(kwargs)
     return UpdateInfo(**defaults)
-
-
-def _make_mismatch(**kwargs):
-    defaults = dict(
-        container_name="test-app",
-        service_name="app",
-        stack="mystack",
-        image="nginx",
-        current_tag="latest",
-        pattern=r"^\d+$",
-        reason="did not match",
-        host="local",
-    )
-    defaults.update(kwargs)
-    return RegexMismatch(**defaults)
 
 
 def _make_warning(**kwargs):
@@ -110,7 +95,7 @@ _T0 = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
-# AC1 — webhook payload rows carry host (update / mismatch / warning / host_status)
+# AC1 — webhook payload rows carry host (update / warning / host_status)
 # ---------------------------------------------------------------------------
 
 class TestWebhookPayloadHost:
@@ -128,14 +113,12 @@ class TestWebhookPayloadHost:
         ]
 
         with cfg_patcher(**_webhook_cfg(NOTIFY_AUTH_TYPE="", NOTIFY_AUTH_TOKEN="")):
-            webhook_notify(updates, mismatches=[_make_mismatch(host="prod-1")],
-                           warnings=[_make_warning(host="prod-2")])
+            webhook_notify(updates, warnings=[_make_warning(host="prod-2")])
 
         payload = mock_session.post.call_args[1]["json"]
         assert payload["new"][0]["host"] == "prod-1"
         assert payload["known"][0]["host"] == "prod-2"
         assert payload["resolved"][0]["host"] == "prod-3"
-        assert payload["regex_mismatches"][0]["host"] == "prod-1"
         assert payload["warnings"][0]["host"] == "prod-2"
 
     @patch.object(http_mod, "http_session")
@@ -182,24 +165,18 @@ class TestEmailHostColumn:
         text = _build_plain([_make_update(host="prod-7", stack="mystack")])
         assert "[prod-7]" in text
 
-    def test_email_mismatch_section_has_host(self):
-        html = _build_mismatch_section_html([_make_mismatch(host="mismatch-host")])
-        assert ">Host<" in html
-        assert "mismatch-host" in html
 
     def test_email_warnings_section_has_host(self):
         html = _build_warnings_section_html([_make_warning(host="warn-host")])
         assert ">Host<" in html
         assert "warn-host" in html
 
-    def test_email_plain_has_host_for_mismatch_and_warning(self):
+    def test_email_plain_has_host_for_update_and_warning(self):
         text = _build_plain(
             [_make_update(host="h1")],
-            mismatches=[_make_mismatch(host="h2")],
             warnings=[_make_warning(host="h3")],
         )
         assert "[h1]" in text
-        assert "[h2]" in text
         assert "[h3]" in text
 
 

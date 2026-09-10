@@ -29,7 +29,7 @@ from app.models import HostStatusEvent
 from app.notifications.webhook import host_updown as webhook_host_updown
 from app.notifications.email import host_updown as email_host_updown
 from app.state import get_event_last_fired, set_event_last_fired
-from app.metrics import notifications_attempted_total, notifications_sent_total
+from app.metrics import record_delivery
 
 
 def _active_channels() -> list[str]:
@@ -77,12 +77,7 @@ def notify_host_status(
 
     for event in events:
         key = f"host:{event.host}"
-        message = (
-            f"Host down: {event.host} — {event.error or 'unreachable'}"
-            if event.event == "down"
-            else f"Host recovered: {event.host}"
-        )
-        _config.log.info(message)
+        _config.log.info(event.summary)
 
         if not active:
             # DRY_RUN or no usable channel: log only, never consume the
@@ -112,17 +107,4 @@ def notify_host_status(
             except Exception as exc:  # a broken channel must not break the scan
                 _config.log.error(f"Host-status {channel} notification failed: {exc}")
                 continue
-            _record_message_delivery(channel, result)
-
-
-def _record_message_delivery(channel: str, result: bool | None) -> None:
-    """Update attempted/sent counters for a host-status message.
-
-    Mirrors ``_record`` in ``app/notifications/__init__.py``: ``None`` means
-    the notifier skipped (no dispatch attempted).
-    """
-    if result is None:
-        return
-    notifications_attempted_total.labels(channel=channel).inc()
-    if result:
-        notifications_sent_total.labels(channel=channel).inc()
+            record_delivery(channel, result)

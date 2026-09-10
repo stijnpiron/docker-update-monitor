@@ -11,7 +11,7 @@ from docker.errors import APIError as DockerAPIError, DockerException
 
 import app.config as _config
 from app.cooldown import parse_cooldown
-from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatusEvent
+from app.models import UpdateInfo, ScanWarning, HostStatusEvent
 from app.registry import fetch_all_tags
 from app.registry.dockerhub import get_dockerhub_token
 from app.registry.manifest import fetch_manifest_list, is_platform_supported, fetch_digest, fetch_platform_digest
@@ -24,21 +24,6 @@ from app.state import (
 )
 from app.health import update_state
 from app.metrics import check_errors_total, update_after_scan
-
-
-def _is_higher_version(candidate: str | None, current: str | None) -> bool:
-    """Return True if candidate > current using semver-aware (integer) comparison.
-
-    Splits both strings by '.' and compares segment-by-segment as integers.
-    Falls back to plain string comparison when any segment is non-numeric
-    (e.g. digest hashes), where string ordering is an acceptable approximation.
-    """
-    c = candidate or ""
-    b = current or ""
-    try:
-        return tuple(int(p) for p in c.split(".")) > tuple(int(p) for p in b.split("."))
-    except ValueError:
-        return c > b
 
 
 def _extract_local_digest(repo_digests: list[str]) -> str | None:
@@ -123,7 +108,6 @@ class _HostScanResult:
     """
     host: str
     raw_updates: list[UpdateInfo]
-    mismatches: list[RegexMismatch] = field(default_factory=list)
     warnings: list[ScanWarning] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
     monitored_versions: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
@@ -141,8 +125,9 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
     local to this call, so same-named containers on different hosts are fully
     isolated.
     """
+    local_name = _config.LOCAL_HOST_NAME
     containers = client.containers.list()
-    if host == "local":
+    if host == local_name:
         _config.log.info(f"Running containers: {len(containers)}")
     else:
         _config.log.info(f"[{host}] Running containers: {len(containers)}")
@@ -167,7 +152,6 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
     # run different versions of the same image. Per host.
     tags_cache: dict[tuple[str, str], list[str]] = {}
     all_updates: list[UpdateInfo] = []
-    all_mismatches: list[RegexMismatch] = []
     all_warnings: list[ScanWarning] = []
     skipped_containers: list[dict] = []
     monitored_versions: dict[tuple[str, str], tuple[str, str]] = {}
@@ -522,15 +506,12 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
 
     _config.log.info("-" * 60)
     _config.log.info(f"Check complete — {len(all_updates)} update(s) detected")
-    if all_mismatches:
-        _config.log.info(f"  Regex mismatches: {len(all_mismatches)}")
     if all_warnings:
         _config.log.info(f"  Warnings: {len(all_warnings)}")
 
     return _HostScanResult(
         host=host,
         raw_updates=all_updates,
-        mismatches=all_mismatches,
         warnings=all_warnings,
         skipped=skipped_containers,
         monitored_versions=monitored_versions,
@@ -672,9 +653,10 @@ def run_check() -> None:
     # Per-host raw scan artifacts; hosts that raise are recorded in
     # host_status below and simply absent from this list.
     results: list[_HostScanResult] = []
+    local_name = _config.LOCAL_HOST_NAME
 
     for host, url in hosts:
-        hp = f"[{host}] " if host != "local" else ""
+        hp = f"[{host}] " if host != local_name else ""
         try:
             client = _connect_host(host, url)
         except DockerException as exc:
@@ -724,14 +706,13 @@ def run_check() -> None:
     # remove-container cleanup stay scoped to each host (container names are
     # not unique across hosts).
     all_categorized: list[UpdateInfo] = []
-    all_mismatches: list[RegexMismatch] = []
     all_warnings: list[ScanWarning] = []
     skipped_containers: list[dict] = []
     container_cooldowns: dict[str, timedelta] = {}
     monitored_total = 0
 
     for r in results:
-        hp = f"[{r.host}] " if r.host != "local" else ""
+        hp = f"[{r.host}] " if r.host != local_name else ""
         categorized = process_scan(
             r.raw_updates, scan_time,
             current_versions=r.monitored_versions,
@@ -740,20 +721,10 @@ def run_check() -> None:
             host=r.host,
         )
 
-        # Deduplicate: keep only the highest new_version per
-        # (host, container, image, update_type). The DB unique constraint
-        # already prevents exact duplicates; this guards against any edge case
-        # where the same host+container+image+type appears with different
-        # new_versions. ``host`` in the key keeps same-named containers on
-        # different hosts as separate entries.
-        _deduped: dict[tuple[str, str, str, str], UpdateInfo] = {}
-        for _u in categorized:
-            _key = (_u.host, _u.container_name, _u.image, _u.update_type)
-            if _key not in _deduped or _is_higher_version(_u.new_version, _deduped[_key].new_version):
-                _deduped[_key] = _u
-        all_categorized.extend(_deduped.values())
+        # No in-memory dedup: run_check builds exactly one UpdateInfo per
+        # (host, container, image, update_type) — the latest candidate wins.
+        all_categorized.extend(categorized)
 
-        all_mismatches.extend(r.mismatches)
         all_warnings.extend(r.warnings)
         skipped_containers.extend(r.skipped)
         container_cooldowns.update(r.container_cooldowns)
@@ -786,10 +757,10 @@ def run_check() -> None:
         actionable.append(u)
 
     # Single notification dispatch per scan, with the merged, host-tagged lists.
-    # An all-down cycle reaches this with actionable/mismatches/warnings all
-    # empty; dispatch no-ops internally in that case (QA D5 — no early return
+    # An all-down cycle reaches this with actionable/warnings all empty;
+    # dispatch no-ops internally in that case (QA D5 — no early return
     # before the metrics/health update below).
-    notify(actionable, mismatches=all_mismatches, warnings=all_warnings)
+    notify(actionable, warnings=all_warnings)
     if actionable:
         mark_notified(actionable, scan_time)
 
@@ -812,18 +783,12 @@ def run_check() -> None:
         host_status=metric_host_status,
     )
 
-    # Update health endpoint state (host_status feeds the dashboard strip,
-    # task 06). Warning/mismatch rows carry the host so the dashboard can
-    # badge + sort them.
+    # Update health endpoint state. Warning rows carry the host so the
+    # dashboard can badge + sort them.
     warnings_data = [
         {"container_name": w.container_name, "image": w.image, "level": w.level,
          "message": w.message, "host": w.host, "stack": ""}
         for w in all_warnings
-    ] + [
-        {"container_name": m.container_name, "image": m.image, "level": "warning",
-         "message": m.reason, "host": m.host, "stack": m.stack}
-        for m in all_mismatches
     ]
     update_state(last_check=scan_time, containers_monitored=monitored_total,
-                 warnings=warnings_data, skipped_containers=skipped_containers,
-                 host_status=get_host_status())
+                 warnings=warnings_data, skipped_containers=skipped_containers)

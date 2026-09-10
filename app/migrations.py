@@ -56,6 +56,90 @@ def _rebuild_updates_with_host(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE updates_new RENAME TO updates")
 
 
+def rename_local_host_rows(conn: sqlite3.Connection, new_local_name: str) -> None:
+    """One-shot rename of the legacy ``'local'`` host label to *new_local_name*.
+
+    Called from ``state._connect`` after schema migrations, driven by
+    ``LOCAL_HOST_NAME``. When the operator first renames the local daemon,
+    existing rows still labelled ``'local'`` are renamed so history keeps
+    belonging to the same daemon — the dashboard strip, webhook payloads,
+    and host-status down/recovered continuity all follow the new name.
+
+    Runs at most once per database: completion is recorded in the
+    ``metadata`` table under ``local_host_renamed_to``. The marker is set
+    even when there are no ``'local'`` rows to rename, so a *remote* host
+    literally named ``local`` (legal once the local daemon has a different
+    name) is never mistaken for legacy local data on a later restart.
+
+    Column/table presence is checked before each UPDATE: the metadata
+    table always exists when called from ``state._connect`` (it is created
+    earlier in that function), but the table checks keep this callable on
+    hand-built connections too and prevent UNIQUE/PK collisions if a row
+    for the new name already exists (treated as nothing left to migrate).
+    """
+    if new_local_name == "local":
+        return
+
+    table_names = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    if "metadata" not in table_names:
+        # No metadata table to record the marker in: nothing to migrate either
+        # (a DB old enough to lack it has its 'local' rows handled by the
+        # host-column rebuild above). Do not crash either way.
+        return
+
+    already = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'local_host_renamed_to'"
+    ).fetchone()
+    if already is not None and already[0]:
+        return
+
+    if "updates" in table_names:
+        has_local = conn.execute(
+            "SELECT 1 FROM updates WHERE host = 'local' LIMIT 1"
+        ).fetchone()
+        has_new = conn.execute(
+            "SELECT 1 FROM updates WHERE host = ? LIMIT 1", (new_local_name,)
+        ).fetchone()
+        if has_local is not None and has_new is None:
+            # Skip when a row for the new name exists: the UNIQUE constraint
+            # would reject the UPDATE, and its presence means this data was
+            # already written under the new name.
+            conn.execute(
+                "UPDATE updates SET host = ? WHERE host = 'local'",
+                (new_local_name,),
+            )
+    if "host_status" in table_names:
+        has_local = conn.execute(
+            "SELECT 1 FROM host_status WHERE host = 'local' LIMIT 1"
+        ).fetchone()
+        has_new = conn.execute(
+            "SELECT 1 FROM host_status WHERE host = ? LIMIT 1", (new_local_name,)
+        ).fetchone()
+        if has_local is not None and has_new is None:
+            # host is the PRIMARY KEY — a pre-existing row for the new name
+            # would also make a plain UPDATE raise IntegrityError.
+            conn.execute(
+                "UPDATE host_status SET host = ? WHERE host = 'local'",
+                (new_local_name,),
+            )
+    if "event_cooldowns" in table_names:
+        # Cooldown keys are namespaced "host:<name>"; host names cannot
+        # contain ':' so the exact key match is unambiguous.
+        conn.execute(
+            "UPDATE event_cooldowns SET key = ? WHERE key = 'host:local'",
+            (f"host:{new_local_name}",),
+        )
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('local_host_renamed_to', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (new_local_name,),
+    )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply all pending migrations to an existing database."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(updates)").fetchall()}

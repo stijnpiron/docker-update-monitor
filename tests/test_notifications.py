@@ -279,31 +279,6 @@ class TestNotifyPayloadStructure:
             assert "status" not in entry
 
     @patch.object(http_mod, "http_session")
-    def test_payload_includes_mismatches(self, mock_session):
-        from app.models import RegexMismatch
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_session.post.return_value = mock_resp
-
-        mismatch = RegexMismatch(
-            container_name="app", service_name="app", stack="stack",
-            image="nginx", current_tag="latest", pattern=r"^\d+$",
-            reason="did not match",
-        )
-
-        with patch.object(config_mod, "DRY_RUN", False), \
-             patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
-             patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
-             patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
-            notify([_make_update()], mismatches=[mismatch])
-
-        payload = mock_session.post.call_args[1]["json"]
-        assert "regex_mismatches" in payload
-        assert payload["regex_mismatches"][0]["container_name"] == "app"
-
-    @patch.object(http_mod, "http_session")
     def test_payload_includes_warnings(self, mock_session):
         from app.models import ScanWarning
 
@@ -410,25 +385,24 @@ class TestNotifyMisconfiguredAuth:
         assert "Authorization" not in headers
 
     @patch.object(http_mod, "http_session")
-    def test_mismatches_only_triggers_post(self, mock_session):
-        """If only mismatches are present (no updates), webhook still fires."""
-        from app.models import RegexMismatch
+    def test_warning_only_triggers_post(self, mock_session):
+        """If only warnings are present (no updates), webhook still fires."""
+        from app.models import ScanWarning
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_session.post.return_value = mock_resp
 
-        mismatch = RegexMismatch(
-            container_name="app", service_name="app", stack="stack",
-            image="nginx", current_tag="latest", pattern=r"^\d+$",
-            reason="did not match",
+        warning = ScanWarning(
+            container_name="app", image="nginx",
+            level="warning", message="fetch failed",
         )
 
         with patch.object(config_mod, "DRY_RUN", False), \
              patch.object(config_mod, "NOTIFY_ENDPOINT", "http://hook.example.com"), \
              patch.object(config_mod, "NOTIFY_AUTH_TYPE", ""), \
              patch.object(config_mod, "NOTIFY_AUTH_TOKEN", ""):
-            notify([], mismatches=[mismatch])
+            notify([], warnings=[warning])
 
         mock_session.post.assert_called_once()

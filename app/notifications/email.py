@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from html import escape
 
 import app.config as _config
-from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatusEvent
+from app.models import UpdateInfo, ScanWarning, HostStatusEvent
 
 _TYPE_COLORS = {"major": "#dc2626", "minor": "#d97706", "patch": "#2563eb"}
 _TD = "padding:6px 12px;border-bottom:1px solid #e5e7eb;"
@@ -69,41 +69,6 @@ def _build_section(title: str, emoji: str, updates: list[UpdateInfo], header_col
     )
 
 
-def _build_mismatch_section_html(mismatches: list[RegexMismatch]) -> str:
-    if not mismatches:
-        return ""
-    rows = ""
-    for m in mismatches:
-        rows += (
-            f'<tr>'
-            f'<td style="{_TD}">{escape(m.host)}</td>'
-            f'<td style="{_TD}font-weight:bold;">{escape(m.stack)}</td>'
-            f'<td style="{_TD}">{escape(m.service_name or m.container_name)}</td>'
-            f'<td style="{_TD}">{escape(m.container_name)}</td>'
-            f'<td style="{_TD}">{escape(m.image)}</td>'
-            f'<td style="{_MONO}">{escape(m.current_tag)}</td>'
-            f'<td style="{_MONO}">{escape(m.pattern)}</td>'
-            f'</tr>'
-        )
-    return (
-        f'<h3 style="color:#6b7280;margin:20px 0 8px 0;">\u26a0\ufe0f Regex mismatches ({len(mismatches)})</h3>'
-        f'<p style="color:#6b7280;font-size:13px;margin:0 0 8px 0;">'
-        f'These containers have a tag-regex that does not match their current tag. Check your configuration.</p>'
-        f'<table style="border-collapse:collapse;width:100%;">'
-        f'<thead><tr style="background:#f3f4f6;">'
-        f'<th style="padding:6px 12px;text-align:left;">Host</th>'
-        f'<th style="padding:6px 12px;text-align:left;">Stack</th>'
-        f'<th style="padding:6px 12px;text-align:left;">Service</th>'
-        f'<th style="padding:6px 12px;text-align:left;">Container</th>'
-        f'<th style="padding:6px 12px;text-align:left;">Image</th>'
-        f'<th style="padding:6px 12px;text-align:left;">Current Tag</th>'
-        f'<th style="padding:6px 12px;text-align:left;">Pattern</th>'
-        f'</tr></thead>'
-        f'<tbody>{rows}</tbody>'
-        f'</table>'
-    )
-
-
 def _build_warnings_section_html(warnings: list[ScanWarning]) -> str:
     if not warnings:
         return ""
@@ -134,7 +99,7 @@ def _build_warnings_section_html(warnings: list[ScanWarning]) -> str:
     )
 
 
-def _build_html(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | None = None, warnings: list[ScanWarning] | None = None) -> str:
+def _build_html(updates: list[UpdateInfo], warnings: list[ScanWarning] | None = None) -> str:
     new, known, resolved = _split_by_status(updates)
     new = _sort_updates(new)
     known = _sort_updates(known)
@@ -144,8 +109,6 @@ def _build_html(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | Non
     sections += _build_section("New updates", "\U0001f195", new, "#dc2626")
     sections += _build_section("Known updates", "\U0001f504", known, "#d97706")
     sections += _build_section("Resolved", "\u2705", resolved, "#16a34a")
-    if mismatches:
-        sections += _build_mismatch_section_html(mismatches)
     if warnings:
         sections += _build_warnings_section_html(warnings)
 
@@ -159,7 +122,7 @@ def _build_html(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | Non
     )
 
 
-def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | None = None, warnings: list[ScanWarning] | None = None) -> str:
+def _build_plain(updates: list[UpdateInfo], warnings: list[ScanWarning] | None = None) -> str:
     new, known, resolved = _split_by_status(updates)
     new = _sort_updates(new)
     known = _sort_updates(known)
@@ -178,16 +141,6 @@ def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | No
             )
         lines.append("")
 
-    if mismatches:
-        lines.append(f"Regex mismatches ({len(mismatches)})")
-        lines.append("-" * 30)
-        for m in mismatches:
-            lines.append(
-                f"  [{m.host}] [{m.stack}] {m.service_name or m.container_name} ({m.container_name}) "
-                f"{m.image}:{m.current_tag}  pattern='{m.pattern}'"
-            )
-        lines.append("")
-
     if warnings:
         lines.append(f"Warnings ({len(warnings)})")
         lines.append("-" * 30)
@@ -199,10 +152,34 @@ def _build_plain(updates: list[UpdateInfo], mismatches: list[RegexMismatch] | No
     return "\n".join(lines)
 
 
+def _smtp_send(msg: MIMEMultipart, what: str) -> bool:
+    """Connect to SMTP, log in if configured, and send *msg*.
+
+    Returns True on success, False on any SMTP error (logged, never raised).
+    *what* names the message in the error log. Port 465 uses implicit SSL
+    (SMTPS); otherwise a plain connect with optional STARTTLS.
+    """
+    try:
+        if _config.SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(_config.SMTP_HOST, _config.SMTP_PORT)
+        else:
+            server = smtplib.SMTP(_config.SMTP_HOST, _config.SMTP_PORT)
+            if _config.SMTP_TLS:
+                server.starttls()
+
+        with server:
+            if _config.SMTP_USERNAME and _config.SMTP_PASSWORD:
+                server.login(_config.SMTP_USERNAME, _config.SMTP_PASSWORD)
+            server.sendmail(_config.SMTP_FROM, _config.SMTP_TO, msg.as_string())
+        return True
+    except Exception as exc:
+        _config.log.error(f"Failed to send {what}: {exc}")
+        return False
+
+
 def notify(
     updates: list[UpdateInfo],
     *,
-    mismatches: list[RegexMismatch] | None = None,
     warnings: list[ScanWarning] | None = None,
 ) -> bool | None:
     """Send email notification.
@@ -211,7 +188,7 @@ def notify(
     failed (e.g. SMTP error), and None when no delivery was attempted (empty
     payload, missing SMTP configuration).
     """
-    if not updates and not mismatches and not warnings:
+    if not updates and not warnings:
         return None
 
     if not _config.SMTP_HOST or not _config.SMTP_FROM or not _config.SMTP_TO:
@@ -222,50 +199,31 @@ def notify(
     total = len(new) + len(known) + len(resolved)
     subject = f"\U0001f433 Docker Update Monitor \u2013 {total} image update{'s' if total != 1 else ''}"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = _config.SMTP_FROM
-    msg["To"] = ", ".join(_config.SMTP_TO)
+    msg = _build_message(
+        subject, _build_plain(updates, warnings), _build_html(updates, warnings)
+    )
 
-    plain_body = _build_plain(updates, mismatches, warnings)
-    html_body = _build_html(updates, mismatches, warnings)
-
-    msg.attach(MIMEText(plain_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
-
-    try:
-        if _config.SMTP_PORT == 465:
-            # Port 465: implicit SSL (SMTPS)
-            server = smtplib.SMTP_SSL(_config.SMTP_HOST, _config.SMTP_PORT)
-        else:
-            # Port 587 or other: plain connect, then optional STARTTLS
-            server = smtplib.SMTP(_config.SMTP_HOST, _config.SMTP_PORT)
-            if _config.SMTP_TLS:
-                server.starttls()
-
-        with server:
-            if _config.SMTP_USERNAME and _config.SMTP_PASSWORD:
-                server.login(_config.SMTP_USERNAME, _config.SMTP_PASSWORD)
-            server.sendmail(_config.SMTP_FROM, _config.SMTP_TO, msg.as_string())
-    except Exception as exc:
-        _config.log.error(f"Failed to send email notification: {exc}")
+    if not _smtp_send(msg, "email notification"):
         return False
 
     _config.log.info(f"Email sent to {', '.join(_config.SMTP_TO)} with {len(updates)} update(s)")
     return True
 
 
-def _event_text(event: HostStatusEvent) -> str:
-    """Human-readable one-line summary of a single host up/down event."""
-    if event.event == "recovered":
-        return f"Host recovered: {event.host}"
-    error = event.error or "unreachable"
-    return f"Host unreachable: {event.host} — {error}"
+def _build_message(subject: str, plain_body: str, html_body: str) -> MIMEMultipart:
+    """Build the multipart message: subject/headers + plain+html parts."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = _config.SMTP_FROM
+    msg["To"] = ", ".join(_config.SMTP_TO)
+    msg.attach(MIMEText(plain_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+    return msg
 
 
 def _build_host_status_bodies(event: HostStatusEvent) -> tuple[str, str, str]:
     """Build (subject, plain body, HTML body) for one host up/down event."""
-    text = _event_text(event)
+    text = event.summary
     if event.event == "recovered":
         emoji = "\u2705"
         color = "#16a34a"
@@ -305,7 +263,7 @@ def host_updown(event: HostStatusEvent) -> bool | None:
     * ``True``  — the message was sent successfully.
     """
     if _config.DRY_RUN:
-        _config.log.info("DRY_RUN — would send host-status email: " + _event_text(event))
+        _config.log.info("DRY_RUN — would send host-status email: " + event.summary)
         return None
 
     if not _config.SMTP_HOST or not _config.SMTP_FROM or not _config.SMTP_TO:
@@ -314,31 +272,10 @@ def host_updown(event: HostStatusEvent) -> bool | None:
 
     subject, plain_body, html_body = _build_host_status_bodies(event)
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = _config.SMTP_FROM
-    msg["To"] = ", ".join(_config.SMTP_TO)
+    msg = _build_message(subject, plain_body, html_body)
 
-    msg.attach(MIMEText(plain_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
-
-    try:
-        if _config.SMTP_PORT == 465:
-            # Port 465: implicit SSL (SMTPS)
-            server = smtplib.SMTP_SSL(_config.SMTP_HOST, _config.SMTP_PORT)
-        else:
-            # Port 587 or other: plain connect, then optional STARTTLS
-            server = smtplib.SMTP(_config.SMTP_HOST, _config.SMTP_PORT)
-            if _config.SMTP_TLS:
-                server.starttls()
-
-        with server:
-            if _config.SMTP_USERNAME and _config.SMTP_PASSWORD:
-                server.login(_config.SMTP_USERNAME, _config.SMTP_PASSWORD)
-            server.sendmail(_config.SMTP_FROM, _config.SMTP_TO, msg.as_string())
-    except Exception as exc:
-        _config.log.error(f"Failed to send host-status email notification: {exc}")
+    if not _smtp_send(msg, "host-status email notification"):
         return False
 
-    _config.log.info(f"Host-status email sent to {', '.join(_config.SMTP_TO)}: {_event_text(event)}")
+    _config.log.info(f"Host-status email sent to {', '.join(_config.SMTP_TO)}: {event.summary}")
     return True

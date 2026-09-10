@@ -13,15 +13,13 @@ _state: dict = {
     "containers_monitored": 0,
     "warnings": [],
     "skipped_containers": [],
-    "host_status": [],
 }
 
 
 def update_state(*, last_check: datetime | None = None, next_check: datetime | None = None,
                  containers_monitored: int | None = None,
                  warnings: list[dict] | None = None,
-                 skipped_containers: list[dict] | None = None,
-                 host_status: list[dict] | None = None) -> None:
+                 skipped_containers: list[dict] | None = None) -> None:
     iso_to_persist: str | None = None
     with _state_lock:
         if last_check is not None:
@@ -36,8 +34,6 @@ def update_state(*, last_check: datetime | None = None, next_check: datetime | N
             _state["warnings"] = list(warnings)
         if skipped_containers is not None:
             _state["skipped_containers"] = list(skipped_containers)
-        if host_status is not None:
-            _state["host_status"] = list(host_status)
     if iso_to_persist is not None:
         save_last_check(iso_to_persist)
 

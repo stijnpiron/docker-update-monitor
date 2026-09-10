@@ -176,7 +176,7 @@ class TestSingleLocalHost:
         assert "No hosts were reachable in this scan cycle" in caplog.text
         # notify() is reached with an empty payload (not skipped), which the
         # real dispatch no-ops on.
-        mock_notify.assert_called_once_with([], mismatches=[], warnings=[])
+        mock_notify.assert_called_once_with([], warnings=[])
 
         status = state_mod.get_host_status()
         assert len(status) == 1
@@ -362,7 +362,7 @@ class TestAllHostsDownStillUpdatesMetrics:
         # The all-down cycle reaches notify() with an empty payload (dispatch
         # no-ops internally) — no update is (re-)dispatched for the outage.
         assert mock_notify.call_count == 2
-        mock_notify.assert_called_with([], mismatches=[], warnings=[])
+        mock_notify.assert_called_with([], warnings=[])
 
 
 # ---------------------------------------------------------------------------
@@ -609,19 +609,19 @@ class TestSingleNotificationDispatch:
 
 
 # ---------------------------------------------------------------------------
-# host_status surfaced through health.py state (task 06 readiness)
+# host_status persisted to the state DB (task 06 readiness)
 # ---------------------------------------------------------------------------
 
-class TestHostStatusInHealthState:
+class TestHostStatusInStateDb:
 
     @patch.object(scanner_mod, "notify")
     @patch.object(scanner_mod, "get_dockerhub_token", return_value="tok")
     @patch.object(scanner_mod, "docker")
-    def test_host_status_in_health_state(
+    def test_host_status_persisted_to_state_db(
         self, mock_docker, mock_token, mock_notify
     ):
-        """After a scan, health._state['host_status'] holds the snapshots
-        for every configured host."""
+        """After a scan, the state DB holds reachability snapshots for every
+        configured host."""
         mock_docker.from_env.return_value = _container_client("local", [])
         mock_docker.DockerClient.side_effect = DockerException("offline")
 
@@ -629,13 +629,10 @@ class TestHostStatusInHealthState:
              patch.object(config_mod, "GITHUB_TOKEN", ""):
             scanner_mod.run_check()
 
-        with health_mod._state_lock:
-            hs = list(health_mod._state.get("host_status", []))
-
-        by_host = {h["host"]: h for h in hs}
+        by_host = {h["host"]: h for h in state_mod.get_host_status()}
         assert set(by_host) == {"local", "remote-a"}
-        assert by_host["local"]["reachable"] == 1
-        assert by_host["remote-a"]["reachable"] == 0
+        assert by_host["local"]["reachable"] is True
+        assert by_host["remote-a"]["reachable"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
-"""Unit tests for the scan data model (host field + HostStatus) — task 02."""
+"""Unit tests for the scan data model (host field) — task 02."""
 
 from dataclasses import asdict
 
-from app.models import UpdateInfo, RegexMismatch, ScanWarning, HostStatus
+from app.models import UpdateInfo, ScanWarning
 
 
 # --- Construction helpers shared across tests ---------------------------------
@@ -19,20 +19,6 @@ def _make_update(**overrides) -> UpdateInfo:
     )
     base.update(overrides)
     return UpdateInfo(**base)
-
-
-def _make_mismatch(**overrides) -> RegexMismatch:
-    base = dict(
-        container_name="app",
-        service_name="app",
-        stack="stack",
-        image="nginx",
-        current_tag="weird_tag",
-        pattern=r"^(\d+)\.(\d+)$",
-        reason="did not match current tag",
-    )
-    base.update(overrides)
-    return RegexMismatch(**base)
 
 
 def _make_warning(**overrides) -> ScanWarning:
@@ -84,62 +70,38 @@ def test_update_info_asdict_includes_host():
     assert d["host"] == "prod-1"
 
 
-# --- RegexMismatch / ScanWarning ------------------------------------------------
+# --- ScanWarning ----------------------------------------------------------------
 
-def test_regex_mismatch_and_scan_warning_default_local():
-    assert _make_mismatch().host == "local"
+def test_scan_warning_default_local():
     assert _make_warning().host == "local"
-
-
-def test_regex_mismatch_accepts_explicit_host():
-    assert _make_mismatch(host="prod-1").host == "prod-1"
 
 
 def test_scan_warning_accepts_explicit_host():
     assert _make_warning(host="prod-1").host == "prod-1"
 
 
-# --- HostStatus ----------------------------------------------------------------
+# --- HostStatusEvent ----------------------------------------------------------------
 
-def test_host_status_fields_round_trip():
-    """AC3: fields round-trip; error is None when reachable is True
-    (a documented convention, not enforced by the type)."""
-    hs = HostStatus(
-        host="prod-1",
-        reachable=True,
-        error=None,
-        checked_at="2026-09-04T12:00:00+00:00",
-    )
-    assert hs.host == "prod-1"
-    assert hs.reachable is True
-    assert hs.error is None
-    assert hs.checked_at == "2026-09-04T12:00:00+00:00"
-
-    # Unreachable case carries an error message by convention.
-    hs_down = HostStatus(
-        host="prod-2",
-        reachable=False,
-        error="ssh: Connection timed out",
-        checked_at="2026-09-04T12:05:00+00:00",
-    )
-    assert hs_down.reachable is False
-    assert hs_down.error == "ssh: Connection timed out"
+def test_host_status_event_summary():
+    from app.models import HostStatusEvent
+    assert HostStatusEvent(host="h1", event="recovered").summary == "Host recovered: h1"
+    assert HostStatusEvent(host="h1", event="down", error="boom").summary == "Host down: h1 — boom"
+    assert HostStatusEvent(host="h1", event="down").summary == "Host down: h1 — unreachable"
 
 
 # --- Webhook payload serialization ----------------------------------------------
 
 def test_webhook_asdict_includes_host():
-    """AC5: _build_payload serializes host on every update / mismatch / warning."""
+    """AC5: _build_payload serializes host on every update / warning."""
     from app.notifications.webhook import _build_payload
 
     updates = [
         _make_update(host="prod-1", status="new"),
         _make_update(image="redis", host="prod-2", status="known"),
     ]
-    mismatches = [_make_mismatch(host="prod-1")]
     warnings = [_make_warning(host="prod-2")]
 
-    payload = _build_payload(updates, mismatches, warnings)
+    payload = _build_payload(updates, warnings)
 
     # Every grouped update entry carries host.
     for status_key, entries in payload.items():
@@ -148,6 +110,5 @@ def test_webhook_asdict_includes_host():
     assert payload["new"][0]["host"] == "prod-1"
     assert payload["known"][0]["host"] == "prod-2"
 
-    # Mismatch / warning lists also carry host.
-    assert payload["regex_mismatches"][0]["host"] == "prod-1"
+    # Warning list also carries host.
     assert payload["warnings"][0]["host"] == "prod-2"

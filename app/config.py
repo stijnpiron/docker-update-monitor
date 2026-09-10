@@ -108,19 +108,41 @@ def _parse_host_reach_cooldown() -> timedelta:
 
 
 def _fail_host_config(message: str) -> None:
-    """Log a config validation error and exit, matching invalid-CRON behavior."""
-    log.error(f"Invalid DOCKER_HOSTS configuration — {message} — exiting")
+    """Log a host-config validation error and exit, matching invalid-CRON behavior.
+
+    Used for both ``DOCKER_HOSTS`` and ``LOCAL_HOST_NAME`` — the two env vars
+    share the same validation ruleset (name charset, uniqueness, reserved words).
+    """
+    log.error(f"Invalid host-name configuration — {message} — exiting")
     sys.exit(1)
+
+
+# Display name for the local Docker daemon (the entry with url ``None``).
+# Default "local"; can be renamed via the env var of the same name.
+# Must match ``_HOST_NAME_RE`` (same rule as ``DOCKER_HOSTS`` names) so the
+# local host can share the same badge/color/sort rules as remote hosts. Empty
+# after ``.strip()`` falls back to "local" silently (a stray whitespace is not
+# a config error — it's the kind of thing a hand-edited .env produces). Invalid
+# content (non-ASCII, spaces, slashes, …) is a hard fail-fast at startup — the
+# same pattern as an invalid ``CRON_SCHEDULE`` or a bad ``DOCKER_HOSTS`` value,
+# so the typo surfaces as a logged error rather than a "host unreachable"
+# row on the first scan.
+LOCAL_HOST_NAME = os.environ.get("LOCAL_HOST_NAME", "local").strip() or "local"
+if not _HOST_NAME_RE.match(LOCAL_HOST_NAME):
+    _fail_host_config(
+        f"LOCAL_HOST_NAME value {LOCAL_HOST_NAME!r} contains invalid characters "
+        "(allowed: A-Za-z0-9 . _ -)"
+    )
 
 
 def _parse_docker_hosts() -> list[tuple[str, str | None]]:
     """Parse the ``DOCKER_HOSTS`` env var into ordered ``(name, url)`` tuples.
 
-    ``local`` (url ``None``) is always first; every remote host is
-    ``ssh://…``. Exits with a clear message on any validation failure rather
-    than silently dropping a bad value.
+    The local daemon (url ``None``) is always first, named ``LOCAL_HOST_NAME``
+    (default ``"local"``); every remote host is ``ssh://…``. Exits with a clear
+    message on any validation failure rather than silently dropping a bad value.
     """
-    hosts: list[tuple[str, str | None]] = [("local", None)]
+    hosts: list[tuple[str, str | None]] = [(LOCAL_HOST_NAME, None)]
     raw = os.environ.get("DOCKER_HOSTS")
     if raw is None or raw.strip() == "":
         return hosts
@@ -142,9 +164,11 @@ def _parse_docker_hosts() -> list[tuple[str, str | None]]:
         if not name:
             _fail_host_config(f"host entry {segment!r} has an empty name")
 
-        if name == "local":
+        if name == LOCAL_HOST_NAME:
             _fail_host_config(
-                f"host entry {segment!r} uses the reserved name 'local'"
+                f"host entry {segment!r} uses the reserved local host name "
+                f"{LOCAL_HOST_NAME!r} (set via LOCAL_HOST_NAME; rename the "
+                "remote, or choose a different LOCAL_HOST_NAME)"
             )
 
         if not _HOST_NAME_RE.match(name):

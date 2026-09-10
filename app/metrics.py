@@ -46,6 +46,20 @@ notifications_sent_total = Counter(
     ["channel"],
 )
 
+
+def record_delivery(channel: str, result: bool | None) -> None:
+    """Update attempted/sent counters based on a notifier return value.
+
+    ``None`` means the notifier skipped (no payload, dry-run, missing config) —
+    no attempt was made, so neither counter moves.
+    """
+    if result is None:
+        return
+    notifications_attempted_total.labels(channel=channel).inc()
+    if result:
+        notifications_sent_total.labels(channel=channel).inc()
+
+
 # Tracks which (host, update_type) label pairs have been set, so we can zero
 # them out when they are no longer present after a scan.
 _seen_update_labels: set[tuple[str, str]] = set()
@@ -53,21 +67,6 @@ _seen_update_labels: set[tuple[str, str]] = set()
 # Tracks which host labels have been set on dum_host_reachable, so we can zero
 # them out when a host is no longer configured/present after a scan.
 _seen_hosts: set[str] = set()
-
-
-def _iter_update_fields(updates: list) -> list[tuple[str, str, str]]:
-    """Return (status, update_type, host) for each update dict or object.
-
-    A missing/empty ``host`` falls back to ``"local"`` so single-host (pre-
-    feature) data keeps its legacy labels untouched.
-    """
-    out: list[tuple[str, str, str]] = []
-    for u in updates:
-        if isinstance(u, dict):
-            out.append((u.get("status", ""), u.get("update_type", "unknown"), u.get("host") or "local"))
-        else:
-            out.append((u.status, u.update_type, getattr(u, "host", "local") or "local"))
-    return out
 
 
 def update_after_scan(
@@ -80,8 +79,8 @@ def update_after_scan(
 ) -> None:
     """Update gauge metrics with the latest scan results.
 
-    ``updates`` is a list of dicts (from get_all_updates()) or UpdateInfo
-    objects; each carries a ``host`` (defaults to ``"local"``).
+    ``updates`` is a list of dicts (from get_all_updates()); each carries a
+    ``host`` (defaults to ``"local"``).
 
     ``host_status`` is an optional list of ``{"host": ..., "reachable": ...}``
     rows (one per configured host) driving ``dum_host_reachable``. Pass ``None``
@@ -95,8 +94,9 @@ def update_after_scan(
 
     # Per-host, per-type pending counts (status != resolved).
     by_host_type: dict[tuple[str, str], int] = {}
-    for status, utype, host in _iter_update_fields(updates):
-        if status != "resolved":
+    for u in updates:
+        if u.get("status") != "resolved":
+            host, utype = u.get("host") or "local", u.get("update_type", "unknown")
             by_host_type[(host, utype)] = by_host_type.get((host, utype), 0) + 1
 
     for host, t in _seen_update_labels - set(by_host_type):
