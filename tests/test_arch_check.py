@@ -14,7 +14,7 @@ from app import config as config_mod
 from app.registry.manifest import (
     fetch_manifest_list,
     is_platform_supported,
-    clear_cache,
+    _clear_cache,
     _fetch_dockerhub_manifest_list,
     _fetch_ghcr_manifest_list,
 )
@@ -74,9 +74,9 @@ def _make_container(name, image_tag, labels=None, os="linux", arch="amd64"):
 @pytest.fixture(autouse=True)
 def _clear_manifest_cache():
     """Clear the manifest cache before every test."""
-    clear_cache()
+    _clear_cache()
     yield
-    clear_cache()
+    _clear_cache()
 
 
 # ---------------------------------------------------------------------------

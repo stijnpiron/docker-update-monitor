@@ -64,47 +64,22 @@ _HOST_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _DEFAULT_HOST_REACH_COOLDOWN = "1h"
 
 
-def _normalize_update_cooldown_env() -> str:
-    """Normalize an invalid ``UPDATE_COOLDOWN`` to ``0`` with a warning (QA I5).
+def _parse_cooldown_env(name: str, raw: str, default: str) -> str:
+    """Return *raw* if it parses as a cooldown, else *default* with a warning.
 
-    The scanner's per-container cooldown *label* path already treats an invalid
-    value as "no cooldown" with a warning, but the global path had no guard —
-    a typo in ``UPDATE_COOLDOWN`` raised ``ValueError`` out of ``run_check()``
-    on every scan. Normalize at startup, mirroring ``_parse_host_reach_cooldown``,
-    so both paths share the same lenient semantics.
+    Shared by ``UPDATE_COOLDOWN`` and ``HOST_REACH_COOLDOWN`` (QA I5) so a typo
+    in either never raises out of startup / ``run_check()`` — both fall back
+    to a safe default with a logged warning.
     """
     try:
-        parse_cooldown(UPDATE_COOLDOWN_RAW)
-        return UPDATE_COOLDOWN_RAW
+        parse_cooldown(raw)
+        return raw
     except ValueError:
-        log.warning(
-            "Invalid UPDATE_COOLDOWN value %r, falling back to no cooldown (0)",
-            UPDATE_COOLDOWN_RAW,
-        )
-        return "0"
+        log.warning("Invalid %s value %r, falling back to %s", name, raw, default)
+        return default
 
 
-UPDATE_COOLDOWN_RAW = _normalize_update_cooldown_env()
-
-
-def _parse_host_reach_cooldown() -> timedelta:
-    """Parse ``HOST_REACH_COOLDOWN`` into a timedelta.
-
-    Unset values keep the default; *invalid* values (parse errors) fall back
-    to the default with a warning, mirroring the ``_int_env`` pattern so a bad
-    value never prevents startup.
-    """
-    raw = os.environ.get("HOST_REACH_COOLDOWN")
-    if raw is None or raw.strip() == "":
-        return parse_cooldown(_DEFAULT_HOST_REACH_COOLDOWN)
-    try:
-        return parse_cooldown(raw)
-    except ValueError:
-        log.warning(
-            "Invalid HOST_REACH_COOLDOWN value %r, falling back to %s",
-            raw, _DEFAULT_HOST_REACH_COOLDOWN,
-        )
-        return parse_cooldown(_DEFAULT_HOST_REACH_COOLDOWN)
+UPDATE_COOLDOWN_RAW = _parse_cooldown_env("UPDATE_COOLDOWN", UPDATE_COOLDOWN_RAW, "0")
 
 
 def _fail_host_config(message: str) -> None:
@@ -192,4 +167,8 @@ def _parse_docker_hosts() -> list[tuple[str, str | None]]:
 
 
 DOCKER_HOSTS          = _parse_docker_hosts()
-HOST_REACH_COOLDOWN   = _parse_host_reach_cooldown()
+HOST_REACH_COOLDOWN   = parse_cooldown(_parse_cooldown_env(
+    "HOST_REACH_COOLDOWN",
+    os.environ.get("HOST_REACH_COOLDOWN") or _DEFAULT_HOST_REACH_COOLDOWN,
+    _DEFAULT_HOST_REACH_COOLDOWN,
+))

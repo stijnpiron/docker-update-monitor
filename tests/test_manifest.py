@@ -22,9 +22,9 @@ from app.registry.manifest import (
     fetch_manifest_list,
     fetch_digest,
     fetch_platform_digest,
-    clear_cache,
-    clear_digest_cache,
-    clear_platform_digest_cache,
+    _clear_cache,
+    _clear_digest_cache,
+    _clear_platform_digest_cache,
     _fetch_platforms_from_url,
     _fetch_ghcr_manifest_list,
 )
@@ -81,13 +81,13 @@ def _make_head_resp(digest, status_code=200):
 @pytest.fixture(autouse=True)
 def _clear_all_caches():
     """Reset every module-level cache around each test."""
-    clear_cache()
-    clear_digest_cache()
-    clear_platform_digest_cache()
+    _clear_cache()
+    _clear_digest_cache()
+    _clear_platform_digest_cache()
     yield
-    clear_cache()
-    clear_digest_cache()
-    clear_platform_digest_cache()
+    _clear_cache()
+    _clear_digest_cache()
+    _clear_platform_digest_cache()
 
 
 # ---------------------------------------------------------------------------

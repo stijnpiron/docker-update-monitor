@@ -21,7 +21,7 @@ from app.registry.base import detect_registry
 _cache: dict[tuple[str, str], Optional[list[dict]]] = {}
 
 
-def clear_cache() -> None:
+def _clear_cache() -> None:
     """Clear the manifest list cache. Used in tests."""
     _cache.clear()
 
@@ -243,7 +243,7 @@ def is_platform_supported(
 _digest_cache: dict[tuple[str, str], Optional[str]] = {}
 
 
-def clear_digest_cache() -> None:
+def _clear_digest_cache() -> None:
     """Clear the digest cache. Used in tests."""
     _digest_cache.clear()
 
@@ -322,7 +322,7 @@ def fetch_digest(
 _platform_digest_cache: dict[tuple[str, str, str, str], Optional[str]] = {}
 
 
-def clear_platform_digest_cache() -> None:
+def _clear_platform_digest_cache() -> None:
     """Clear the platform digest cache. Used in tests."""
     _platform_digest_cache.clear()
 

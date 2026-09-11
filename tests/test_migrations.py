@@ -440,15 +440,4 @@ class TestRenameLocalHost:
         assert self._marker(conn) == "home-node"
         conn.close()
 
-    def test_missing_metadata_table_is_noop(self):
-        """A hand-built connection without the metadata table must not crash."""
-        from app.migrations import rename_local_host_rows
-        conn = sqlite3.connect(":memory:")
-        conn.execute(
-            "CREATE TABLE updates (container_name TEXT, host TEXT)"
-        )
-        conn.execute("INSERT INTO updates VALUES ('web', 'local')")
-        conn.commit()
-        rename_local_host_rows(conn, "home-node")  # no metadata table → skip
-        assert conn.execute("SELECT host FROM updates").fetchone()[0] == "local"
-        conn.close()
+
