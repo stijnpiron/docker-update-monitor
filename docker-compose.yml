@@ -117,7 +117,13 @@ services:
       # flag) reads /home/ssh/.ssh/config by default — no HOME env override is
       # needed. Each `Host <alias>` block maps its host to a per-host key (a
       # /run/secrets/ path, see the secrets below). The mounted directory and
-      # the config file must be readable by the container user `nobody`.
+      # the config file must be readable by the container user `nobody` —
+      # AND the config file's OWNER must be root or nobody (uid 65534):
+      # OpenSSH refuses to read a user config owned by anyone else, failing
+      # "Bad owner or permissions on ..." even at mode 644. On the host:
+      # `chown root:root config/ssh/.ssh/config` (root always passes,
+      # regardless of the container's uid) + `chmod 644` (no group/other
+      # write bits).
       #
       # Host KEY PINNING (the default here): each `Host` block points
       # UserKnownHostsFile at a WRITABLE known_hosts file. `accept-new` records
@@ -130,8 +136,13 @@ services:
       # writes to /dev/null always succeed, so ssh prints "Permanently added"
       # on every connect while recording nothing.
       #
-      # Example ./config/ssh/.ssh/config (the `Host` name must match the host
-      # name in DOCKER_HOSTS):
+      # Example ./config/ssh/.ssh/config (the `Host` pattern must match the
+      # literal connect host — the part after `@` in DOCKER_HOSTS' ssh:// URL,
+      # NOT the "name=" label before the `=`. If DOCKER_HOSTS connects by IP
+      # (ssh://user@1.2.3.4), the block must be `Host 1.2.3.4` — a `Host` line
+      # matching only the dashboard label never matches, silently falling
+      # back to non-accept-new defaults and failing with "Host key
+      # verification failed"):
       #
       #   Host prod-host
       #       IdentityFile /run/secrets/ssh_prod_key
@@ -158,14 +169,15 @@ services:
     # blocks in the mounted config. Each is mounted at /run/secrets/<name>.
     # A key per host limits blast radius if one host/key is compromised.
     #
-    # Permissions: `file:` secrets are published in the container as
-    # root:root 0444 regardless of the host file's mode, and ssh runs as
-    # `nobody` (uid 65534). OpenSSH only rejects a private key that is owned
-    # BY the running user and world/group-readable — the owner (root) differs
-    # from the running user (nobody), so the check is skipped and the readable
-    # 0444 file is used. You do NOT need to change the host key's mode.
-    # (Caveat: if you bind-mount a key instead of a `file:` secret, the
-    # in-container owner/mode are the host file's own — see README "SSH setup".)
+    # Permissions: under plain `docker compose` (not Swarm), a `file:` secret
+    # is a BIND MOUNT of the host file — it keeps the HOST file's owner/mode
+    # verbatim (Compose docs: uid/gid/mode are only honored for `environment:`-
+    # sourced secrets, silently ignored for `file:` ones). It is NOT the
+    # Swarm-only root:root 0444 tmpfs. ssh runs as `nobody` (uid 65534), so
+    # each host key must be WORLD-READABLE on the host: `chmod 644
+    # config/ssh/ssh_<name>`. Its owner can stay whoever created it (e.g. your
+    # deploy user) — OpenSSH only rejects a key owned BY the running user
+    # (nobody) with group/other bits set, so a non-nobody owner + 644 is safe.
     #
     # secrets:
     #   - ssh_prod_key
@@ -180,9 +192,10 @@ services:
 
 # --- Multi-host SSH keys (optional; top-level `secrets`) ---
 # Define each per-host private key here and enable it in the service `secrets:`
-# list above. Each `file:` entry maps a key on the Docker host to a read-only
-# /run/secrets/<name> in the container (published root:root 0444, which ssh
-# running as `nobody` can read — see the service secrets comment).
+# list above. Each `file:` entry bind-mounts a key on the Docker host to a
+# /run/secrets/<name> in the container, keeping the HOST file's owner/mode
+# (not root:root 0444 — that's Swarm-only) — see the service secrets comment
+# for the required `chmod 644`.
 #
 # secrets:
 #   ssh_prod_key:

@@ -362,8 +362,18 @@ Host nas-host
     UserKnownHostsFile /home/ssh/known_hosts
 EOF
 touch ./config/ssh/known_hosts          # starts EMPTY on purpose
+sudo chown root:root ./config/ssh/.ssh/config
+chmod 644 ./config/ssh/.ssh/config
 ```
 
+- **The config file's owner matters, not just its mode.** OpenSSH refuses to
+  read a user config file unless it is owned by `root` **or** by the account
+  running `ssh` (`nobody`, uid 65534 in this image) — any other owner fails
+  with `Bad owner or permissions on /home/ssh/.ssh/config`, even at `644`, and
+  every host is recorded unreachable. `chown root:root` (above) is the
+  simplest fix since `root` always satisfies the check regardless of the
+  container's uid. Also keep the mode free of group/other **write** bits
+  (`644`/`600` are fine, `664`/`646` are not).
 - The second file, `./config/ssh/known_hosts`, gets **nothing from you — it
   starts empty on purpose**. On the first connection, `accept-new` records each
   remote's host key into it automatically (you'll see one warning per host in
@@ -373,8 +383,16 @@ touch ./config/ssh/known_hosts          # starts EMPTY on purpose
   `prod-host ssh-ed25519 AAAA...`. **Never** hand-edit it, and if a host key
   _legitimately_ changes (host rebuilt), delete just that one line — or the
   host will stay `unreachable`.
-- Each `Host <alias>` **must match** the host `name` in `DOCKER_HOSTS`
-  (step 4).
+- **The `Host <pattern>` line must match the literal connect string** — the
+  part after `@` in the `ssh://user@host` URL you put in `DOCKER_HOSTS` — NOT
+  the dashboard `name=` label before the `=`. These only look the same when
+  that part is a DNS alias (e.g. `ssh://monitor@prod-host` → `Host
+prod-host`). If you instead connect by IP (`ssh://docker-adm@192.168.1.44`),
+  the block must be `Host 192.168.1.44`; a `Host` line matching the dashboard
+  label alone never matches, so ssh falls back to its non-`accept-new`
+  default and fails hard with `Host key verification failed` in the
+  non-interactive session docker-py spawns. Want to keep a friendly alias as
+  the `Host` name anyway? Add `HostName 192.168.1.44` inside the block.
 - The paths inside the config (`/run/secrets/…`, `/home/ssh/known_hosts`) are
   **in-container** paths; the _source_ files on the monitor host are the
   relative `./config/ssh/…` paths, wired to those container paths in step 5.
@@ -426,17 +444,24 @@ secrets:
     file: ./config/ssh/ssh_nas_key
 ```
 
-**Why the key's permissions are not a problem with `file:` secrets.** A Docker
-`file:` secret is published into the container as `root:root 0444` regardless of
-the host file's mode, and the container runs `ssh` as `nobody` (uid 65534).
-OpenSSH's private-key safety check only rejects a key that is _owned by the
-running user_ and world/group-readable — here the owner (root) differs from the
-running user (nobody), so the check is skipped and the 0444 file (readable)
-is used normally. You therefore do **not** need to `chmod 644` the host key for
-the standard `file:`-secret path. (Caveat: if you instead **bind-mount** a key
-file, the in-container owner/mode are the host file's own; if that file's uid
-is 65534 and it has group/other bits, the client will refuse it. Use `file:`
-secrets to avoid this.)
+**The key must be world-readable on the host.** Under plain `docker compose up`
+(not `docker stack deploy`/Swarm), a `file:` secret is a **bind mount of the
+host file** — Compose's own docs note `uid`/`gid`/`mode` are only honored for
+`environment:`-sourced secrets and are silently ignored for `file:` ones. So
+the container sees the host key's exact owner and mode; it is **not**
+published as `root:root 0444` (that behavior is Swarm-only). Since the
+container runs `ssh` as `nobody` (uid 65534):
+
+```bash
+chmod 644 ./config/ssh/ssh_prod_key ./config/ssh/ssh_nas_key
+```
+
+The owner can stay whoever created the key (e.g. your deploy user) — OpenSSH's
+private-key safety check only rejects a key _owned by_ the running user
+(`nobody`) with group/other bits set, so a non-`nobody` owner plus `644` is
+safe. Skipping this leaves the key unreadable by `nobody` and every connect
+fails with `Load key "/run/secrets/…": Permission denied` /
+`Permission denied (publickey)`.
 
 **6. Monitor host — (re)start and verify.**
 
