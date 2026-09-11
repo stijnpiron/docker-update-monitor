@@ -9,8 +9,14 @@ containers_monitored = Gauge(
 
 updates_available = Gauge(
     "dum_updates_available",
-    "Number of available updates by type",
-    ["type"],
+    "Number of available updates by type and host",
+    ["type", "host"],
+)
+
+host_reachable = Gauge(
+    "dum_host_reachable",
+    "Per-host reachability gauge (1=reachable, 0=unreachable)",
+    ["host"],
 )
 
 check_duration_seconds = Gauge(
@@ -40,9 +46,27 @@ notifications_sent_total = Counter(
     ["channel"],
 )
 
-# Tracks which update_type labels have been set, so we can zero them out when
-# they are no longer present after a scan.
-_seen_update_types: set[str] = set()
+
+def record_delivery(channel: str, result: bool | None) -> None:
+    """Update attempted/sent counters based on a notifier return value.
+
+    ``None`` means the notifier skipped (no payload, dry-run, missing config) —
+    no attempt was made, so neither counter moves.
+    """
+    if result is None:
+        return
+    notifications_attempted_total.labels(channel=channel).inc()
+    if result:
+        notifications_sent_total.labels(channel=channel).inc()
+
+
+# Tracks which (host, update_type) label pairs have been set, so we can zero
+# them out when they are no longer present after a scan.
+_seen_update_labels: set[tuple[str, str]] = set()
+
+# Tracks which host labels have been set on dum_host_reachable, so we can zero
+# them out when a host is no longer configured/present after a scan.
+_seen_hosts: set[str] = set()
 
 
 def update_after_scan(
@@ -51,32 +75,46 @@ def update_after_scan(
     updates: list,
     duration_seconds: float,
     last_check_ts: float,
+    host_status: list[dict] | None = None,
 ) -> None:
     """Update gauge metrics with the latest scan results.
 
-    ``updates`` is a list of dicts (from get_all_updates()) or UpdateInfo objects.
+    ``updates`` is a list of dicts (from get_all_updates()); each carries a
+    ``host`` (defaults to ``"local"``).
+
+    ``host_status`` is an optional list of ``{"host": ..., "reachable": ...}``
+    rows (one per configured host) driving ``dum_host_reachable``. Pass ``None``
+    to leave the per-host reachability gauge untouched.
     """
-    global _seen_update_types
+    global _seen_update_labels, _seen_hosts
 
     containers_monitored.set(monitored)
     last_check_timestamp_seconds.set(last_check_ts)
     check_duration_seconds.set(duration_seconds)
 
-    by_type: dict[str, int] = {}
+    # Per-host, per-type pending counts (status != resolved).
+    by_host_type: dict[tuple[str, str], int] = {}
     for u in updates:
-        if isinstance(u, dict):
-            status = u.get("status", "")
-            utype = u.get("update_type", "unknown")
-        else:
-            status = u.status
-            utype = u.update_type
-        if status != "resolved":
-            by_type[utype] = by_type.get(utype, 0) + 1
+        if u.get("status") != "resolved":
+            host, utype = u.get("host") or "local", u.get("update_type", "unknown")
+            by_host_type[(host, utype)] = by_host_type.get((host, utype), 0) + 1
 
-    for t in _seen_update_types - set(by_type):
-        updates_available.labels(type=t).set(0)
+    for host, t in _seen_update_labels - set(by_host_type):
+        updates_available.labels(type=t, host=host).set(0)
 
-    for t, count in by_type.items():
-        updates_available.labels(type=t).set(count)
+    for (host, t), count in by_host_type.items():
+        updates_available.labels(type=t, host=host).set(count)
 
-    _seen_update_types = set(by_type.keys())
+    _seen_update_labels = set(by_host_type)
+
+    # Per-host reachability gauge (dum_host_reachable).
+    if host_status is not None:
+        current_hosts = {row["host"] for row in host_status}
+        for host in _seen_hosts - current_hosts:
+            host_reachable.labels(host=host).set(0)
+        for row in host_status:
+            host = row["host"]
+            reachable = row.get("reachable")
+            up = 1 if reachable else 0
+            host_reachable.labels(host=host).set(up)
+        _seen_hosts = set(current_hosts)

@@ -87,12 +87,17 @@ def _fetch_platforms_from_url(url: str, auth_headers: dict) -> Optional[list[dic
 
 
 # ---------------------------------------------------------------------------
-# Registry-specific fetchers
+# Registry-specific auth + URL assembly (shared by manifest list, digest and
+# platform-digest fetchers)
 # ---------------------------------------------------------------------------
 
-def _fetch_dockerhub_manifest_list(
+def _dockerhub_auth_url(
     image_name: str, tag: str, username: str, password: str
-) -> Optional[list[dict]]:
+) -> tuple[str, dict] | None:
+    """Build (manifest URL, auth headers) for a DockerHub image.
+
+    Returns None (with a warning) when no registry token could be obtained.
+    """
     name = image_name.removeprefix("docker.io/")
     parts = name.split("/")
     if len(parts) == 1:
@@ -107,18 +112,23 @@ def _fetch_dockerhub_manifest_list(
         password=password,
     )
     if not token:
-        log.warning(f"DockerHub: could not obtain registry token for {name} — skipping arch check")
+        log.warning(f"DockerHub: could not obtain registry token for {name}")
         return None
 
-    url = f"https://registry-1.docker.io/v2/{name}/manifests/{tag}"
-    return _fetch_platforms_from_url(url, {"Authorization": f"Bearer {token}"})
+    return (
+        f"https://registry-1.docker.io/v2/{name}/manifests/{tag}",
+        {"Authorization": f"Bearer {token}"},
+    )
 
 
-def _fetch_ghcr_manifest_list(
-    image_name: str, tag: str, github_token: str
-) -> Optional[list[dict]]:
+def _ghcr_auth_url(image_name: str, tag: str, github_token: str) -> tuple[str, dict] | None:
+    """Build (manifest URL, auth headers) for a GHCR (or lscr.io) image.
+
+    Returns None (with a warning) when GITHUB_TOKEN is missing or the PAT
+    could not be exchanged for a registry token.
+    """
     if not github_token:
-        log.warning(f"GHCR: no GITHUB_TOKEN — skipping arch check for {image_name}")
+        log.warning(f"GHCR: no GITHUB_TOKEN — skipping check for {image_name}")
         return None
 
     image_ref = image_name.strip()
@@ -142,11 +152,31 @@ def _fetch_ghcr_manifest_list(
         bearer_token=github_token,
     )
     if not reg_token:
-        log.warning(f"GHCR: could not obtain registry token for {path} — skipping arch check")
+        log.warning(f"GHCR: could not obtain registry token for {path}")
         return None
 
-    url = f"https://{host}/v2/{path}/manifests/{tag}"
-    return _fetch_platforms_from_url(url, {"Authorization": f"Bearer {reg_token}"})
+    return (
+        f"https://{host}/v2/{path}/manifests/{tag}",
+        {"Authorization": f"Bearer {reg_token}"},
+    )
+
+
+def _fetch_dockerhub_manifest_list(
+    image_name: str, tag: str, username: str, password: str
+) -> Optional[list[dict]]:
+    auth = _dockerhub_auth_url(image_name, tag, username, password)
+    if auth is None:
+        return None
+    return _fetch_platforms_from_url(*auth)
+
+
+def _fetch_ghcr_manifest_list(
+    image_name: str, tag: str, github_token: str
+) -> Optional[list[dict]]:
+    auth = _ghcr_auth_url(image_name, tag, github_token)
+    if auth is None:
+        return None
+    return _fetch_platforms_from_url(*auth)
 
 
 # ---------------------------------------------------------------------------
@@ -239,57 +269,17 @@ def _fetch_digest_from_url(url: str, auth_headers: dict) -> Optional[str]:
 
 
 def _fetch_dockerhub_digest(image_name: str, tag: str, username: str, password: str) -> Optional[str]:
-    name = image_name.removeprefix("docker.io/")
-    parts = name.split("/")
-    if len(parts) == 1:
-        name = f"library/{name}"
-
-    scope = f"repository:{name}:pull"
-    token = _get_token(
-        "https://auth.docker.io/token",
-        service="registry.docker.io",
-        scope=scope,
-        username=username,
-        password=password,
-    )
-    if not token:
-        log.warning(f"DockerHub: could not obtain registry token for {name} — skipping digest fetch")
+    auth = _dockerhub_auth_url(image_name, tag, username, password)
+    if auth is None:
         return None
-
-    url = f"https://registry-1.docker.io/v2/{name}/manifests/{tag}"
-    return _fetch_digest_from_url(url, {"Authorization": f"Bearer {token}"})
+    return _fetch_digest_from_url(*auth)
 
 
 def _fetch_ghcr_digest(image_name: str, tag: str, github_token: str) -> Optional[str]:
-    if not github_token:
-        log.warning(f"GHCR: no GITHUB_TOKEN — skipping digest fetch for {image_name}")
+    auth = _ghcr_auth_url(image_name, tag, github_token)
+    if auth is None:
         return None
-
-    image_ref = image_name.strip()
-    parsed = urlparse(image_ref)
-
-    parsed_host = ""
-    if parsed.scheme and parsed.netloc:
-        parsed_host = (parsed.hostname or "").lower()
-    elif "/" in image_ref:
-        parsed_host = image_ref.split("/", 1)[0].lower()
-
-    host = "lscr.io" if parsed_host == "lscr.io" else "ghcr.io"
-    path = image_ref.removeprefix(f"{host}/")
-
-    scope = f"repository:{path}:pull"
-    reg_token = _get_token(
-        f"https://{host}/token",
-        service=host,
-        scope=scope,
-        bearer_token=github_token,
-    )
-    if not reg_token:
-        log.warning(f"GHCR: could not obtain registry token for {path} — skipping digest fetch")
-        return None
-
-    url = f"https://{host}/v2/{path}/manifests/{tag}"
-    return _fetch_digest_from_url(url, {"Authorization": f"Bearer {reg_token}"})
+    return _fetch_digest_from_url(*auth)
 
 
 def fetch_digest(
@@ -377,59 +367,19 @@ def _fetch_dockerhub_platform_digest(
     image_name: str, tag: str, os: str, architecture: str,
     username: str, password: str,
 ) -> Optional[str]:
-    name = image_name.removeprefix("docker.io/")
-    parts = name.split("/")
-    if len(parts) == 1:
-        name = f"library/{name}"
-
-    scope = f"repository:{name}:pull"
-    token = _get_token(
-        "https://auth.docker.io/token",
-        service="registry.docker.io",
-        scope=scope,
-        username=username,
-        password=password,
-    )
-    if not token:
-        log.warning(f"DockerHub: could not obtain registry token for {name} — skipping platform digest fetch")
+    auth = _dockerhub_auth_url(image_name, tag, username, password)
+    if auth is None:
         return None
-
-    url = f"https://registry-1.docker.io/v2/{name}/manifests/{tag}"
-    return _fetch_platform_digest_from_url(url, {"Authorization": f"Bearer {token}"}, os, architecture)
+    return _fetch_platform_digest_from_url(*auth, os, architecture)
 
 
 def _fetch_ghcr_platform_digest(
     image_name: str, tag: str, os: str, architecture: str, github_token: str,
 ) -> Optional[str]:
-    if not github_token:
-        log.warning(f"GHCR: no GITHUB_TOKEN — skipping platform digest fetch for {image_name}")
+    auth = _ghcr_auth_url(image_name, tag, github_token)
+    if auth is None:
         return None
-
-    image_ref = image_name.strip()
-    parsed = urlparse(image_ref)
-
-    parsed_host = ""
-    if parsed.scheme and parsed.netloc:
-        parsed_host = (parsed.hostname or "").lower()
-    elif "/" in image_ref:
-        parsed_host = image_ref.split("/", 1)[0].lower()
-
-    host = "lscr.io" if parsed_host == "lscr.io" else "ghcr.io"
-    path = image_ref.removeprefix(f"{host}/")
-
-    scope = f"repository:{path}:pull"
-    reg_token = _get_token(
-        f"https://{host}/token",
-        service=host,
-        scope=scope,
-        bearer_token=github_token,
-    )
-    if not reg_token:
-        log.warning(f"GHCR: could not obtain registry token for {path} — skipping platform digest fetch")
-        return None
-
-    url = f"https://{host}/v2/{path}/manifests/{tag}"
-    return _fetch_platform_digest_from_url(url, {"Authorization": f"Bearer {reg_token}"}, os, architecture)
+    return _fetch_platform_digest_from_url(*auth, os, architecture)
 
 
 def fetch_platform_digest(

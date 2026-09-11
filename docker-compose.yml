@@ -70,6 +70,33 @@ services:
       # Examples: "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%b %d, %Y %I:%M %p"
       DASHBOARD_DATETIME_FORMAT: "${DASHBOARD_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
 
+      # --- Multi-host scanning over SSH (optional) ---
+      # Scan one or more remote Docker daemons in addition to the local one, all
+      # on the single CRON_SCHEDULE above, from this one instance. Leave DOCKER_HOSTS
+      # unset (the default) to keep scanning only the local socket — behavior is
+      # unchanged and no SSH connection is attempted.
+      #
+      # Format: comma-separated "name=ssh://user@host" pairs. The name is the
+      # stable per-host label shown in the dashboard and notifications and must
+      # match a `Host <alias>` block in the shared OpenSSH config mounted below
+      # (see the volumes/secrets notes). The local daemon's own label is
+      # configurable via LOCAL_HOST_NAME (default "local") — a remote name may
+      # not collide with it (fails fast at startup).
+      # No HOME override is needed: the image sets user `nobody`'s home directory
+      # to /home/ssh so the OpenSSH client finds /home/ssh/.ssh/config by default.
+      #
+      # Example:
+      #
+      #   DOCKER_HOSTS: "${DOCKER_HOSTS:-prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host}"
+      #   HOST_REACH_COOLDOWN: "${HOST_REACH_COOLDOWN}"   # re-alert window for a host down/recovered, e.g. "30m", "1h", "2d" (default "1h")
+      #   LOCAL_HOST_NAME: "${LOCAL_HOST_NAME:-local}"    # label of the local daemon (dashboard, webhooks, metrics); renaming it migrates existing "local" rows in data/state.db on first run
+      #
+      # Activating DOCKER_HOSTS also requires the "Multi-host SSH config"
+      # volume and the "Multi-host SSH keys" secrets blocks lower in this
+      # file — all three are commented out by default and none takes effect
+      # alone: hosts set but config/keys not mounted → every host is recorded
+      # unreachable with "ssh can't find a config/key", no other signal.
+
     ports:
       # Expose the web dashboard and /metrics endpoint
       - "8080:8080"
@@ -77,12 +104,84 @@ services:
     volumes:
       # Read-only access to the Docker socket
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Persistent state database
+      # Persistent state database.
+      # The container runs as `nobody` (uid 65534). This host dir must be
+      # writable by that uid or SQLite fails with "unable to open database
+      # file". On first setup run: chown 65534:65534 ./data
       - ./data:/app/data
+
+      # --- Multi-host SSH config (optional; enable when DOCKER_HOSTS is set) ---
+      # Mount the shared, read-only OpenSSH client config. The image sets user
+      # `nobody`'s **passwd** home directory to /home/ssh (via `usermod -d`), so
+      # the ssh client (invoked by DockerClient(use_ssh_client=True) with no -F
+      # flag) reads /home/ssh/.ssh/config by default — no HOME env override is
+      # needed. Each `Host <alias>` block maps its host to a per-host key (a
+      # /run/secrets/ path, see the secrets below). The mounted directory and
+      # the config file must be readable by the container user `nobody` —
+      # AND the config file's OWNER must be root or nobody (uid 65534):
+      # OpenSSH refuses to read a user config owned by anyone else, failing
+      # "Bad owner or permissions on ..." even at mode 644. On the host:
+      # `chown root:root config/ssh/.ssh/config` (root always passes,
+      # regardless of the container's uid) + `chmod 644` (no group/other
+      # write bits).
+      #
+      # Host KEY PINNING (the default here): each `Host` block points
+      # UserKnownHostsFile at a WRITABLE known_hosts file. `accept-new` records
+      # the remote's host key on first contact (a one-time log warning), later
+      # connects are silent, and a host that changes its key thereafter fails
+      # hard ("Host key verification failed") and is recorded unreachable.
+      # Mount known_hosts WITHOUT `:ro` (below) — a read-only mount can never
+      # record the key (every connect warns and nothing is ever verified).
+      # Do NOT point UserKnownHostsFile at /dev/null to "quiet" the warning:
+      # writes to /dev/null always succeed, so ssh prints "Permanently added"
+      # on every connect while recording nothing.
+      #
+      # Example ./config/ssh/.ssh/config (the `Host` pattern must match the
+      # literal connect host — the part after `@` in DOCKER_HOSTS' ssh:// URL,
+      # NOT the "name=" label before the `=`. If DOCKER_HOSTS connects by IP
+      # (ssh://user@1.2.3.4), the block must be `Host 1.2.3.4` — a `Host` line
+      # matching only the dashboard label never matches, silently falling
+      # back to non-accept-new defaults and failing with "Host key
+      # verification failed"):
+      #
+      #   Host prod-host
+      #       IdentityFile /run/secrets/ssh_prod_key
+      #       StrictHostKeyChecking accept-new
+      #       UserKnownHostsFile /home/ssh/known_hosts
+      #
+      #   Host nas-host
+      #       IdentityFile /run/secrets/ssh_nas_key
+      #       StrictHostKeyChecking accept-new
+      #       UserKnownHostsFile /home/ssh/known_hosts
+      #
+      # Mounts (enable when DOCKER_HOSTS is set): config read-only,
+      # known_hosts WRITABLE so pinning works.
+      #
+      # - ./config/ssh/.ssh:/home/ssh/.ssh:ro
+      # - ./config/ssh/known_hosts:/home/ssh/known_hosts
 
     # Needed so 'nobody' user can access the Docker socket
     group_add:
       - "${DOCKER_GID:-999}"
+
+    # --- Multi-host SSH keys (optional; enable when DOCKER_HOSTS is set) ---
+    # One read-only `file:` secret per remote host, referenced by the Host
+    # blocks in the mounted config. Each is mounted at /run/secrets/<name>.
+    # A key per host limits blast radius if one host/key is compromised.
+    #
+    # Permissions: under plain `docker compose` (not Swarm), a `file:` secret
+    # is a BIND MOUNT of the host file — it keeps the HOST file's owner/mode
+    # verbatim (Compose docs: uid/gid/mode are only honored for `environment:`-
+    # sourced secrets, silently ignored for `file:` ones). It is NOT the
+    # Swarm-only root:root 0444 tmpfs. ssh runs as `nobody` (uid 65534), so
+    # each host key must be WORLD-READABLE on the host: `chmod 644
+    # config/ssh/ssh_<name>`. Its owner can stay whoever created it (e.g. your
+    # deploy user) — OpenSSH only rejects a key owned BY the running user
+    # (nobody) with group/other bits set, so a non-nobody owner + 644 is safe.
+    #
+    # secrets:
+    #   - ssh_prod_key
+    #   - ssh_nas_key
 
     healthcheck:
       test: ["CMD", "python", "-m", "app.healthcheck"]
@@ -90,3 +189,16 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+# --- Multi-host SSH keys (optional; top-level `secrets`) ---
+# Define each per-host private key here and enable it in the service `secrets:`
+# list above. Each `file:` entry bind-mounts a key on the Docker host to a
+# /run/secrets/<name> in the container, keeping the HOST file's owner/mode
+# (not root:root 0444 — that's Swarm-only) — see the service secrets comment
+# for the required `chmod 644`.
+#
+# secrets:
+#   ssh_prod_key:
+#     file: ./config/ssh/ssh_prod_key   # private key for prod-host
+#   ssh_nas_key:
+#     file: ./config/ssh/ssh_nas_key    # private key for nas-host

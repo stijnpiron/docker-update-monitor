@@ -1,5 +1,11 @@
 import os
+import re
+import sys
 import logging
+
+from datetime import timedelta
+
+from app.cooldown import parse_cooldown
 
 LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -48,4 +54,142 @@ WEB_PORT          = _int_env("WEB_PORT", 8080)
 DASHBOARD_DATETIME_FORMAT = os.environ.get("DASHBOARD_DATETIME_FORMAT", "%d/%m/%Y %H:%M")
 TZ                = os.environ.get("TZ", "")
 
-UPDATE_COOLDOWN   = os.environ.get("UPDATE_COOLDOWN", "0")
+# Raw env-var string the scanner parses (per-container label fallback + the
+# per-scan global cooldown). Normalized at import below (QA I5).
+UPDATE_COOLDOWN_RAW = os.environ.get("UPDATE_COOLDOWN", "0")
+
+# Valid host names: alphanumeric plus dot, underscore, and hyphen.
+_HOST_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+_DEFAULT_HOST_REACH_COOLDOWN = "1h"
+
+
+def _normalize_update_cooldown_env() -> str:
+    """Normalize an invalid ``UPDATE_COOLDOWN`` to ``0`` with a warning (QA I5).
+
+    The scanner's per-container cooldown *label* path already treats an invalid
+    value as "no cooldown" with a warning, but the global path had no guard —
+    a typo in ``UPDATE_COOLDOWN`` raised ``ValueError`` out of ``run_check()``
+    on every scan. Normalize at startup, mirroring ``_parse_host_reach_cooldown``,
+    so both paths share the same lenient semantics.
+    """
+    try:
+        parse_cooldown(UPDATE_COOLDOWN_RAW)
+        return UPDATE_COOLDOWN_RAW
+    except ValueError:
+        log.warning(
+            "Invalid UPDATE_COOLDOWN value %r, falling back to no cooldown (0)",
+            UPDATE_COOLDOWN_RAW,
+        )
+        return "0"
+
+
+UPDATE_COOLDOWN_RAW = _normalize_update_cooldown_env()
+
+
+def _parse_host_reach_cooldown() -> timedelta:
+    """Parse ``HOST_REACH_COOLDOWN`` into a timedelta.
+
+    Unset values keep the default; *invalid* values (parse errors) fall back
+    to the default with a warning, mirroring the ``_int_env`` pattern so a bad
+    value never prevents startup.
+    """
+    raw = os.environ.get("HOST_REACH_COOLDOWN")
+    if raw is None or raw.strip() == "":
+        return parse_cooldown(_DEFAULT_HOST_REACH_COOLDOWN)
+    try:
+        return parse_cooldown(raw)
+    except ValueError:
+        log.warning(
+            "Invalid HOST_REACH_COOLDOWN value %r, falling back to %s",
+            raw, _DEFAULT_HOST_REACH_COOLDOWN,
+        )
+        return parse_cooldown(_DEFAULT_HOST_REACH_COOLDOWN)
+
+
+def _fail_host_config(message: str) -> None:
+    """Log a host-config validation error and exit, matching invalid-CRON behavior.
+
+    Used for both ``DOCKER_HOSTS`` and ``LOCAL_HOST_NAME`` — the two env vars
+    share the same validation ruleset (name charset, uniqueness, reserved words).
+    """
+    log.error(f"Invalid host-name configuration — {message} — exiting")
+    sys.exit(1)
+
+
+# Display name for the local Docker daemon (the entry with url ``None``).
+# Default "local"; can be renamed via the env var of the same name.
+# Must match ``_HOST_NAME_RE`` (same rule as ``DOCKER_HOSTS`` names) so the
+# local host can share the same badge/color/sort rules as remote hosts. Empty
+# after ``.strip()`` falls back to "local" silently (a stray whitespace is not
+# a config error — it's the kind of thing a hand-edited .env produces). Invalid
+# content (non-ASCII, spaces, slashes, …) is a hard fail-fast at startup — the
+# same pattern as an invalid ``CRON_SCHEDULE`` or a bad ``DOCKER_HOSTS`` value,
+# so the typo surfaces as a logged error rather than a "host unreachable"
+# row on the first scan.
+LOCAL_HOST_NAME = os.environ.get("LOCAL_HOST_NAME", "local").strip() or "local"
+if not _HOST_NAME_RE.match(LOCAL_HOST_NAME):
+    _fail_host_config(
+        f"LOCAL_HOST_NAME value {LOCAL_HOST_NAME!r} contains invalid characters "
+        "(allowed: A-Za-z0-9 . _ -)"
+    )
+
+
+def _parse_docker_hosts() -> list[tuple[str, str | None]]:
+    """Parse the ``DOCKER_HOSTS`` env var into ordered ``(name, url)`` tuples.
+
+    The local daemon (url ``None``) is always first, named ``LOCAL_HOST_NAME``
+    (default ``"local"``); every remote host is ``ssh://…``. Exits with a clear
+    message on any validation failure rather than silently dropping a bad value.
+    """
+    hosts: list[tuple[str, str | None]] = [(LOCAL_HOST_NAME, None)]
+    raw = os.environ.get("DOCKER_HOSTS")
+    if raw is None or raw.strip() == "":
+        return hosts
+
+    for segment in raw.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        if "=" not in segment:
+            _fail_host_config(
+                f"host entry {segment!r} is missing '=' (expected name=ssh://…)"
+            )
+
+        name, _, url = segment.partition("=")
+        name = name.strip()
+        url = url.strip()
+
+        if not name:
+            _fail_host_config(f"host entry {segment!r} has an empty name")
+
+        if name == LOCAL_HOST_NAME:
+            _fail_host_config(
+                f"host entry {segment!r} uses the reserved local host name "
+                f"{LOCAL_HOST_NAME!r} (set via LOCAL_HOST_NAME; rename the "
+                "remote, or choose a different LOCAL_HOST_NAME)"
+            )
+
+        if not _HOST_NAME_RE.match(name):
+            _fail_host_config(
+                f"host name {name!r} contains invalid characters "
+                "(allowed: A-Za-z0-9 . _ -)"
+            )
+
+        if not url.startswith("ssh://"):
+            _fail_host_config(
+                f"host {name!r} has docker_host_url {url!r} but only the "
+                "ssh:// scheme is supported"
+            )
+
+        hosts.append((name, url))
+
+    if len({h[0] for h in hosts}) != len(hosts):
+        _fail_host_config("duplicate host name in DOCKER_HOSTS")
+
+    return hosts
+
+
+DOCKER_HOSTS          = _parse_docker_hosts()
+HOST_REACH_COOLDOWN   = _parse_host_reach_cooldown()

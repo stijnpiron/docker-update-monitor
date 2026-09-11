@@ -2,6 +2,8 @@
 
 import importlib
 import logging
+import os
+from datetime import timedelta
 
 import pytest
 
@@ -22,6 +24,11 @@ def _reload_config(monkeypatch, **env):
 def restore_config():
     """Reload config back to current process env after each test."""
     yield
+    # An invalid DOCKER_HOSTS/LOCAL_HOST_NAME value raises SystemExit at import
+    # time, so clear it before reloading to avoid corrupting module state for
+    # later tests.
+    os.environ.pop("DOCKER_HOSTS", None)
+    os.environ.pop("LOCAL_HOST_NAME", None)
     importlib.reload(config_mod)
 
 
@@ -86,3 +93,170 @@ class TestWebPort:
 
     def test_does_not_raise_on_invalid(self, monkeypatch, restore_config):
         _reload_config(monkeypatch, WEB_PORT="oops")
+
+
+class TestDockerHosts:
+    def test_hosts_unset_defaults_to_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, DOCKER_HOSTS=None)
+        assert cfg.DOCKER_HOSTS == [("local", None)]
+
+    def test_hosts_empty_defaults_to_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, DOCKER_HOSTS="  ")
+        assert cfg.DOCKER_HOSTS == [("local", None)]
+
+    def test_hosts_single_pair_appended_after_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, DOCKER_HOSTS="prod=ssh://monitor@prod-host")
+        assert cfg.DOCKER_HOSTS == [("local", None), ("prod", "ssh://monitor@prod-host")]
+
+    def test_hosts_multiple_pairs_preserve_order(self, monkeypatch, restore_config):
+        cfg = _reload_config(
+            monkeypatch,
+            DOCKER_HOSTS="prod=ssh://a, staging=ssh://b, edge=ssh://c",
+        )
+        assert cfg.DOCKER_HOSTS == [
+            ("local", None),
+            ("prod", "ssh://a"),
+            ("staging", "ssh://b"),
+            ("edge", "ssh://c"),
+        ]
+
+    def test_hosts_whitespace_and_empty_segment_tolerated(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, DOCKER_HOSTS=" prod = ssh://a ,  ,staging=ssh://b,")
+        assert cfg.DOCKER_HOSTS == [
+            ("local", None),
+            ("prod", "ssh://a"),
+            ("staging", "ssh://b"),
+        ]
+
+    def test_hosts_rejects_missing_equals(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit) as exc:
+            _reload_config(monkeypatch, DOCKER_HOSTS="just-a-name")
+        assert exc.value.code == 1
+
+    def test_hosts_rejects_duplicate_name(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, DOCKER_HOSTS="prod=ssh://a, prod=ssh://b")
+
+    def test_hosts_rejects_reserved_local_name(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, DOCKER_HOSTS="local=ssh://weird")
+
+    def test_hosts_rejects_bad_characters(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, DOCKER_HOSTS="n a s=ssh://x")
+
+    def test_hosts_rejects_empty_name(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, DOCKER_HOSTS="=ssh://x")
+
+    def test_hosts_rejects_non_ssh_scheme(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, DOCKER_HOSTS="prod=tcp://h:2376")
+
+    def test_hosts_valid_round_trip_invariants(self, monkeypatch, restore_config):
+        cfg = _reload_config(
+            monkeypatch,
+            DOCKER_HOSTS="prod=ssh://a,staging=ssh://b,edge=ssh://c",
+        )
+        names = [name for name, _ in cfg.DOCKER_HOSTS]
+        urls = [url for _, url in cfg.DOCKER_HOSTS]
+        assert urls[0] is None and names[0] == "local"
+        assert len(names) == len(set(names))
+        assert "local" not in names[1:]
+        assert all(url.startswith("ssh://") for url in urls[1:])
+
+
+class TestLocalHostName:
+    """LOCAL_HOST_NAME — the label the local daemon (url None) is scanned under."""
+
+    def test_default_is_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, LOCAL_HOST_NAME=None)
+        assert cfg.LOCAL_HOST_NAME == "local"
+        assert cfg.DOCKER_HOSTS == [("local", None)]
+
+    def test_rename_local_entry(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, LOCAL_HOST_NAME="home-node")
+        assert cfg.LOCAL_HOST_NAME == "home-node"
+        assert cfg.DOCKER_HOSTS == [("home-node", None)]
+
+    def test_rename_with_remote_hosts(self, monkeypatch, restore_config):
+        cfg = _reload_config(
+            monkeypatch,
+            LOCAL_HOST_NAME="home-node",
+            DOCKER_HOSTS="prod=ssh://a",
+        )
+        assert cfg.DOCKER_HOSTS == [("home-node", None), ("prod", "ssh://a")]
+
+    def test_whitespace_only_falls_back_to_local(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, LOCAL_HOST_NAME="   ")
+        assert cfg.LOCAL_HOST_NAME == "local"
+
+    def test_invalid_characters_rejected(self, monkeypatch, restore_config):
+        with pytest.raises(SystemExit):
+            _reload_config(monkeypatch, LOCAL_HOST_NAME="my host")
+
+    def test_collision_with_remote_host_rejected(self, monkeypatch, restore_config):
+        # A remote entry using the renamed local name must fail fast, same as
+        # the default-name collision.
+        with pytest.raises(SystemExit):
+            _reload_config(
+                monkeypatch,
+                LOCAL_HOST_NAME="prod",
+                DOCKER_HOSTS="prod=ssh://a",
+            )
+
+    def test_remote_local_name_allowed_after_rename(self, monkeypatch, restore_config):
+        # Once the local daemon has a different name, `local` is a legal name
+        # for a REMOTE host; it is not reserved any more.
+        cfg = _reload_config(
+            monkeypatch,
+            LOCAL_HOST_NAME="home-node",
+            DOCKER_HOSTS="local=ssh://weird",
+        )
+        assert cfg.DOCKER_HOSTS == [("home-node", None), ("local", "ssh://weird")]
+
+
+class TestHostReachCooldown:
+    def test_host_reach_cooldown_default_1h(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, HOST_REACH_COOLDOWN=None)
+        assert cfg.HOST_REACH_COOLDOWN == timedelta(hours=1)
+
+    def test_host_reach_cooldown_invalid_falls_back(self, monkeypatch, caplog, restore_config):
+        with caplog.at_level(logging.WARNING, logger="dum"):
+            cfg = _reload_config(monkeypatch, HOST_REACH_COOLDOWN="bogus")
+        assert cfg.HOST_REACH_COOLDOWN == timedelta(hours=1)
+        assert any(
+            "HOST_REACH_COOLDOWN" in record.getMessage() and "bogus" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_host_reach_cooldown_custom(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, HOST_REACH_COOLDOWN="4h")
+        assert cfg.HOST_REACH_COOLDOWN == timedelta(hours=4)
+
+
+class TestUpdateCooldownEnv:
+    """QA I5 — UPDATE_COOLDOWN gets the same fail-fast-at-startup validation.
+
+    The raw string is what the scanner parses; a bad value must not survive
+    past import (it used to raise ValueError out of run_check() on every scan).
+    """
+
+    def test_valid_value_preserved(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, UPDATE_COOLDOWN="12h")
+        assert cfg.UPDATE_COOLDOWN_RAW == "12h"
+
+    def test_unset_defaults_to_zero(self, monkeypatch, restore_config):
+        cfg = _reload_config(monkeypatch, UPDATE_COOLDOWN=None)
+        assert cfg.UPDATE_COOLDOWN_RAW == "0"
+
+    def test_invalid_value_normalized_to_zero_with_warning(
+        self, monkeypatch, caplog, restore_config
+    ):
+        with caplog.at_level(logging.WARNING, logger="dum"):
+            cfg = _reload_config(monkeypatch, UPDATE_COOLDOWN="bogus")
+        assert cfg.UPDATE_COOLDOWN_RAW == "0"
+        assert any(
+            "Invalid UPDATE_COOLDOWN" in record.getMessage() and "bogus" in record.getMessage()
+            for record in caplog.records
+        )
