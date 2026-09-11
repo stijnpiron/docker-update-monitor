@@ -1,4 +1,5 @@
 docker>=7.2.0
+paramiko>=3.5.1  # docker-py ssh:// transport probes for this even with use_ssh_client=True
 requests>=2.34.2
 croniter>=6.2.4
 flask>=3.1.3

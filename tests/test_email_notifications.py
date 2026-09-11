@@ -5,14 +5,13 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from app import config as config_mod
-from app.models import UpdateInfo, RegexMismatch, ScanWarning
+from app.models import UpdateInfo, ScanWarning
 from app.notifications.email import (
     notify as email_notify,
     _build_html,
     _build_plain,
     _sort_updates,
     _split_by_status,
-    _build_mismatch_section_html,
     _build_warnings_section_html,
 )
 from app.notifications import dispatch
@@ -279,7 +278,7 @@ class TestNotifyChannelsDispatch:
         updates = [_make_update()]
         with patch.object(config_mod, "NOTIFY_CHANNELS", ["webhook"]):
             dispatch(updates)
-        mock_webhook.assert_called_once_with(updates, mismatches=[], warnings=[])
+        mock_webhook.assert_called_once_with(updates, warnings=[])
         mock_email.assert_not_called()
 
     @patch("app.notifications.email_notify")
@@ -288,7 +287,7 @@ class TestNotifyChannelsDispatch:
         updates = [_make_update()]
         with patch.object(config_mod, "NOTIFY_CHANNELS", ["email"]):
             dispatch(updates)
-        mock_email.assert_called_once_with(updates, mismatches=[], warnings=[])
+        mock_email.assert_called_once_with(updates, warnings=[])
         mock_webhook.assert_not_called()
 
     @patch("app.notifications.email_notify")
@@ -297,8 +296,8 @@ class TestNotifyChannelsDispatch:
         updates = [_make_update()]
         with patch.object(config_mod, "NOTIFY_CHANNELS", ["webhook", "email"]):
             dispatch(updates)
-        mock_webhook.assert_called_once_with(updates, mismatches=[], warnings=[])
-        mock_email.assert_called_once_with(updates, mismatches=[], warnings=[])
+        mock_webhook.assert_called_once_with(updates, warnings=[])
+        mock_email.assert_called_once_with(updates, warnings=[])
 
     @patch("app.notifications.email_notify")
     @patch("app.notifications.webhook_notify")
@@ -320,20 +319,6 @@ class TestNotifyChannelsDispatch:
             dispatch([])
         mock_webhook.assert_not_called()
         mock_email.assert_not_called()
-
-
-def _make_mismatch(**kwargs):
-    defaults = dict(
-        container_name="test-app",
-        service_name="app",
-        stack="mystack",
-        image="nginx",
-        current_tag="latest",
-        pattern=r"^\d+\.\d+\.\d+$",
-        reason="did not match current tag",
-    )
-    defaults.update(kwargs)
-    return RegexMismatch(**defaults)
 
 
 def _make_warning(**kwargs):
@@ -381,30 +366,6 @@ class TestSplitByStatus:
         assert resolved == []
 
 
-class TestBuildMismatchSectionHtml:
-    def test_empty_returns_empty_string(self):
-        assert _build_mismatch_section_html([]) == ""
-
-    def test_contains_mismatch_info(self):
-        html = _build_mismatch_section_html([_make_mismatch()])
-        assert "Regex mismatches" in html
-        assert "nginx" in html
-        assert "latest" in html
-        assert r"\d+" in html
-        assert "mystack" in html
-        assert "<table" in html
-
-    def test_multiple_mismatches(self):
-        mismatches = [
-            _make_mismatch(container_name="app1", image="nginx"),
-            _make_mismatch(container_name="app2", image="redis"),
-        ]
-        html = _build_mismatch_section_html(mismatches)
-        assert "nginx" in html
-        assert "redis" in html
-        assert "(2)" in html
-
-
 class TestBuildWarningsSectionHtml:
     def test_empty_returns_empty_string(self):
         assert _build_warnings_section_html([]) == ""
@@ -426,14 +387,6 @@ class TestBuildWarningsSectionHtml:
 
 
 class TestBuildHtmlWithExtras:
-    def test_html_includes_mismatches(self):
-        html = _build_html(
-            [_make_update()],
-            mismatches=[_make_mismatch()],
-        )
-        assert "Regex mismatches" in html
-        assert "nginx" in html
-
     def test_html_includes_warnings(self):
         html = _build_html(
             [_make_update()],
@@ -448,14 +401,6 @@ class TestBuildHtmlWithExtras:
 
 
 class TestBuildPlainWithExtras:
-    def test_plain_includes_mismatches(self):
-        text = _build_plain(
-            [_make_update()],
-            mismatches=[_make_mismatch()],
-        )
-        assert "Regex mismatches" in text
-        assert "pattern=" in text
-
     def test_plain_includes_warnings(self):
         text = _build_plain(
             [_make_update()],
@@ -476,27 +421,7 @@ class TestBuildPlainWithExtras:
         assert "Could not fetch tags" in text
 
 
-class TestNotifyWithMismatchesAndWarnings:
-    @patch("app.notifications.email.smtplib.SMTP")
-    def test_notify_sends_with_mismatches_only(self, mock_smtp_cls, caplog):
-        import logging
-
-        mock_server = MagicMock()
-        mock_smtp_cls.return_value = mock_server
-
-        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
-             patch.object(config_mod, "SMTP_PORT", 587), \
-             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
-             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
-             patch.object(config_mod, "SMTP_TLS", False), \
-             patch.object(config_mod, "SMTP_USERNAME", ""), \
-             patch.object(config_mod, "SMTP_PASSWORD", ""), \
-             caplog.at_level(logging.INFO):
-            email_notify([], mismatches=[_make_mismatch()])
-
-        mock_server.sendmail.assert_called_once()
-        assert "Email sent" in caplog.text
-
+class TestNotifyWithWarnings:
     @patch("app.notifications.email.smtplib.SMTP")
     def test_notify_sends_with_warnings_only(self, mock_smtp_cls):
         mock_server = MagicMock()
@@ -531,24 +456,6 @@ class TestSubjectEdgeCases:
 
         raw_email = mock_server.sendmail.call_args[0][2]
         assert "1_image_update?=" in raw_email  # singular, Q-encoded
-
-    @patch("app.notifications.email.smtplib.SMTP")
-    def test_subject_zero_when_only_mismatches(self, mock_smtp_cls):
-        """When only mismatches/warnings are sent, subject says '0 image updates' (plural)."""
-        mock_server = MagicMock()
-        mock_smtp_cls.return_value = mock_server
-
-        with patch.object(config_mod, "SMTP_HOST", "smtp.example.com"), \
-             patch.object(config_mod, "SMTP_PORT", 587), \
-             patch.object(config_mod, "SMTP_FROM", "from@example.com"), \
-             patch.object(config_mod, "SMTP_TO", ["to@example.com"]), \
-             patch.object(config_mod, "SMTP_TLS", False), \
-             patch.object(config_mod, "SMTP_USERNAME", ""), \
-             patch.object(config_mod, "SMTP_PASSWORD", ""):
-            email_notify([], mismatches=[_make_mismatch()])
-
-        raw_email = mock_server.sendmail.call_args[0][2]
-        assert "0_image_updates" in raw_email  # Q-encoded, plural for zero
 
 
 class TestBuildRowsEdgeCases:
@@ -613,9 +520,3 @@ class TestSplitByStatusEdgeCases:
         assert len(known) == 0
         assert len(resolved) == 0
 
-
-class TestMismatchServiceNameFallback:
-    def test_html_uses_container_name_when_service_name_none(self):
-        m = _make_mismatch(service_name=None, container_name="my-container")
-        html = _build_mismatch_section_html([m])
-        assert "my-container" in html
