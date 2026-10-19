@@ -575,7 +575,7 @@ Then open `http://<your-host>:8080` in a browser.
 | ------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/`                | Dashboard page (HTML)                                                                                                                                               |
 | `GET`  | `/health`          | Liveness check (JSON) — used by Docker HEALTHCHECK. Always `200` while the server is up; body `status` is `"starting"` until the first scan completes, then `"ok"`. |
-| `GET`  | `/api/updates`     | All updates with status as JSON array (each row includes its `host`)                                                                                                |
+| `GET`  | `/api/updates`     | Pending (non-resolved) updates as JSON array (each row includes its `host`)                                                                                         |
 | `GET`  | `/api/host-status` | Per-host reachability snapshot as a JSON array (`host`, `reachable`, `error`, `checked_at`)                                                                         |
 | `POST` | `/api/scan`        | Trigger immediate scan, returns 202 Accepted                                                                                                                        |
 | `GET`  | `/metrics`         | Prometheus metrics (text/plain)                                                                                                                                     |
