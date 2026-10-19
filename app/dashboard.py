@@ -130,7 +130,7 @@ def create_app() -> Flask:
     @application.route("/api/updates")
     def api_updates():
         # Sort mirrors the page default (host, stack, container_name) per task 06.
-        updates = get_all_updates()
+        updates = [u for u in get_all_updates() if u["status"] != "resolved"]
         updates.sort(key=lambda u: (u.get("host") or "local", u.get("stack") or "", u.get("container_name") or ""))
         return jsonify(updates)
 

@@ -148,6 +148,16 @@ class TestApiUpdatesRoute:
         assert data[0]["status"] == "new"
 
     @patch("app.dashboard.get_all_updates")
+    def test_excludes_resolved(self, mock_updates, client):
+        mock_updates.return_value = [
+            {"container_name": "a", "status": "new"},
+            {"container_name": "b", "status": "known"},
+            {"container_name": "c", "status": "resolved"},
+        ]
+        data = json.loads(client.get("/api/updates").data)
+        assert {r["container_name"] for r in data} == {"a", "b"}
+
+    @patch("app.dashboard.get_all_updates")
     def test_empty_returns_empty_array(self, mock_updates, client):
         mock_updates.return_value = []
         resp = client.get("/api/updates")
