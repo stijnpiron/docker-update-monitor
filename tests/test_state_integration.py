@@ -165,3 +165,42 @@ def test_digest_update_kept_when_tag_unchanged():
     assert len(active) == 1
     assert active[0]["current_version"] == "dev"
     assert active[0]["new_version"] == "sha-abc1234"
+
+
+def test_two_consecutive_scans_across_hosts():
+    """Task 03 integration: per-host scans stay isolated over two cycles."""
+    t1 = datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 4, 1, 13, 0, 0, tzinfo=timezone.utc)
+
+    # Container "web" exists on both prod and staging with the same image.
+    prod_update = UpdateInfo(
+        container_name="web", service_name="web", stack="mystack", image="nginx",
+        current_version="1.0.0", new_version="1.1.0", update_type="minor", host="prod",
+    )
+    staging_update = UpdateInfo(
+        container_name="web", service_name="web", stack="mystack", image="nginx",
+        current_version="1.0.0", new_version="1.1.0", update_type="minor", host="staging",
+    )
+
+    # Cycle 1: both hosts detected.
+    state.process_scan([prod_update], scan_time=t1, host="prod")
+    state.process_scan([staging_update], scan_time=t1, host="staging")
+    assert len(state.get_active_updates()) == 2
+
+    # Cycle 2: prod resolves (container updated), staging still pending.
+    prod_cv = {("web", "nginx"): ("1.1.0", _PAT)}
+    staging_cv = {("web", "nginx"): ("1.0.0", _PAT)}
+    res_prod = state.process_scan([], scan_time=t2, current_versions=prod_cv, host="prod")
+    res_staging = state.process_scan(
+        [staging_update], scan_time=t2, current_versions=staging_cv, host="staging"
+    )
+
+    # Prod's resolved row must not leak into staging's result (and vice versa).
+    assert [r.status for r in res_prod] == ["resolved"]
+    assert all(r.host == "prod" for r in res_prod)
+    assert [r.status for r in res_staging] == ["known"]
+    assert all(r.host == "staging" for r in res_staging)
+
+    active = state.get_active_updates()
+    assert len(active) == 1
+    assert active[0]["host"] == "staging"

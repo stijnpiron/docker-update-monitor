@@ -1,7 +1,7 @@
 """Unit tests for app.state — SQLite state persistence."""
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -851,3 +851,312 @@ class TestConnectionCaching:
         assert errors == []
         # Cached connection wasn't swapped out — it really was reused cross-thread.
         assert state._conn is conn
+
+
+class TestLocalHostRename:
+    """LOCAL_HOST_NAME: on first connect with a non-default name, the legacy
+    'local' rows are renamed in the DB (migrations.rename_local_host_rows)."""
+
+    @staticmethod
+    def _reconnect():
+        """Simulate a process restart: drop the cached connection so the next
+        state call re-opens the same DB file and re-runs schema + migrations.
+        (The autouse fixture in conftest gives every test exactly one fresh
+        connection — the simulated restarts happen within the test.)"""
+        if state._conn is not None:
+            state._conn.close()
+        state._conn = None
+        state._conn_path = None
+
+    def test_first_connect_renames_legacy_local_rows(self):
+        # 1) First connect (default LOCAL_HOST_NAME) writes 'local' rows.
+        state.process_scan([_make_update()], scan_time=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        state.upsert_host_status("local", True, None, "2026-01-01T00:00:00+00:00")
+        assert state.get_active_updates()[0]["host"] == "local"
+        assert [r["host"] for r in state.get_host_status()] == ["local"]
+
+        # 2) Operator sets LOCAL_HOST_NAME; the process restarts and the new
+        # connection re-runs the one-shot rename over the same DB file.
+        self._reconnect()
+        with patch("app.config.LOCAL_HOST_NAME", "home-node"):
+            assert state.get_active_updates()[0]["host"] == "home-node"
+            assert [r["host"] for r in state.get_host_status()] == ["home-node"]
+
+        # 3) Restart again — the marker makes the rename a no-op, no dupes.
+        self._reconnect()
+        with patch("app.config.LOCAL_HOST_NAME", "home-node"):
+            rows = state.get_active_updates()
+            assert len(rows) == 1 and rows[0]["host"] == "home-node"
+
+    def test_noop_when_local_host_name_is_default(self):
+        state.process_scan([_make_update()], scan_time=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        marker = state._connect().execute(
+            "SELECT value FROM metadata WHERE key = 'local_host_renamed_to'"
+        ).fetchone()
+        assert marker is None
+        assert state.get_active_updates()[0]["host"] == "local"
+
+    def test_remote_rows_survive_the_rename(self):
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        state.process_scan([_make_update(host="local")], scan_time=t)
+        state.process_scan([_make_update(host="prod")], scan_time=t, host="prod")
+        assert {r["host"] for r in state.get_active_updates()} == {"local", "prod"}
+
+        # Restart with the local daemon renamed — only the 'local' rows move.
+        self._reconnect()
+        with patch("app.config.LOCAL_HOST_NAME", "home-node"):
+            assert {r["host"] for r in state.get_active_updates()} == {"home-node", "prod"}
+
+
+class TestHostScope:
+    """Task 03: containers that collide across hosts must be fully isolated."""
+
+    def test_process_scan_different_hosts_do_not_collide(self):
+        """Same container/image/version/type on two hosts persist as separate rows."""
+        u_prod = _make_update(host="prod")
+        u_staging = _make_update(host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        state.process_scan([u_prod], scan_time=t1, host="prod")
+        state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        active = state.get_active_updates()
+        assert len(active) == 2
+        hosts = {row["host"] for row in active}
+        assert hosts == {"prod", "staging"}
+
+    def test_process_scan_same_host_dedups_as_before(self):
+        """Repeated scans on the same host upsert a single row."""
+        u = _make_update(host="prod")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1, host="prod")
+        result = state.process_scan([u], scan_time=t2, host="prod")
+
+        assert len(result) == 1
+        assert result[0].status == "known"
+        assert len(state.get_active_updates()) == 1
+        assert result[0].host == "prod"
+
+    def test_process_scan_scope_isolated_per_host(self):
+        """process_scan(host=X) only returns rows for host X."""
+        u_prod = _make_update(container_name="web", host="prod")
+        u_staging = _make_update(container_name="web", host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        state.process_scan([u_prod], scan_time=t1, host="prod")
+        result = state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        # The result of the staging scan is only staging's row.
+        assert [r.host for r in result] == ["staging"]
+
+    def test_process_scan_removed_container_is_host_scoped(self):
+        """nginx removed on prod must not shield a same-named container on staging."""
+        u_prod = _make_update(container_name="nginx", host="prod")
+        u_staging = _make_update(container_name="nginx", host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u_prod], scan_time=t1, host="prod")
+        state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        # nginx is gone on prod (empty existing set) but still present on staging.
+        state.process_scan([], scan_time=t2, host="prod", existing_containers=set())
+        state.process_scan([], scan_time=t2, host="staging", existing_containers={"nginx"})
+
+        remaining = state.get_all_updates()
+        assert len(remaining) == 1
+        assert remaining[0]["host"] == "staging"
+        assert remaining[0]["container_name"] == "nginx"
+
+    def test_mark_notified_is_host_scoped(self):
+        """mark_notified only touches the matching host's row."""
+        u_prod = _make_update(container_name="web", host="prod")
+        u_staging = _make_update(container_name="web", host="staging")
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        res_prod = state.process_scan([u_prod], scan_time=t1, host="prod")
+        res_staging = state.process_scan([u_staging], scan_time=t1, host="staging")
+
+        state.mark_notified(res_prod, notified_time=t1)
+
+        rows = {row["host"]: row for row in state.get_active_updates()}
+        assert rows["prod"]["notified_at"] == t1.isoformat()
+        assert rows["staging"]["notified_at"] is None
+
+    def test_process_scan_defaults_to_local(self):
+        """Omitting host keeps backward compatibility (rows land under 'local')."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        result = state.process_scan([u], scan_time=t1)
+
+        assert result[0].host == "local"
+        assert state.get_active_updates()[0]["host"] == "local"
+
+
+class TestHostStatus:
+    def test_upsert_and_get_host_status_round_trips(self):
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("staging", False, "connection refused", "2026-01-01T00:00:00+00:00")
+
+        rows = {row["host"]: row for row in state.get_host_status()}
+        assert rows["prod"]["reachable"] is True
+        assert rows["prod"]["error"] is None
+        assert rows["staging"]["reachable"] is False
+        assert rows["staging"]["error"] == "connection refused"
+
+    def test_upsert_host_status_updates_existing_row(self):
+        state.upsert_host_status("prod", False, "timeout", "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("prod", True, None, "2026-01-02T00:00:00+00:00")
+
+        rows = state.get_host_status()
+        assert len(rows) == 1
+        assert rows[0]["reachable"] is True
+        assert rows[0]["error"] is None
+        assert rows[0]["checked_at"] == "2026-01-02T00:00:00+00:00"
+
+    def test_upsert_host_status_down_since_set_when_unreachable(self):
+        """QA D2: down_since records the start of the current unreachable
+        streak. It is populated for an unreachable row and None otherwise."""
+        state.upsert_host_status("staging", False, "offline",
+                                 "2026-01-01T00:00:00+00:00",
+                                 down_since="2026-01-01T00:00:00+00:00")
+        row = state.get_host_status()[0]
+        assert row["reachable"] is False
+        assert row["down_since"] == "2026-01-01T00:00:00+00:00"
+
+    def test_upsert_host_status_down_since_none_when_reachable(self):
+        """QA D2: when reachable, down_since is forced to None even if a
+        value is passed (it must not leak a stale 'since' on recovery)."""
+        state.upsert_host_status("staging", True, None,
+                                 "2026-01-01T00:00:00+00:00",
+                                 down_since="2026-01-01T00:00:00+00:00")
+        row = state.get_host_status()[0]
+        assert row["reachable"] is True
+        assert row["down_since"] is None
+
+    def test_upsert_host_status_default_down_since_is_none(self):
+        """QA D2: omitting down_since yields None (forward-compatible)."""
+        state.upsert_host_status("staging", False, "offline", "2026-01-01T00:00:00+00:00")
+        assert state.get_host_status()[0]["down_since"] is None
+
+    def test_get_host_status_empty(self):
+        assert state.get_host_status() == []
+
+
+class TestPurgeOrphanedHosts:
+    """QA D3: rows whose host is no longer in the configured set are dropped.
+
+    The config layer guarantees ``DOCKER_HOSTS`` is never empty (``local`` is
+    always present), so the empty-set guard is a pure safety net.
+    """
+
+    def test_purge_removes_orphaned_host_status_row(self):
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("retired", True, None, "2026-01-01T00:00:00+00:00")
+
+        deleted = state.purge_orphaned_hosts({"local", "prod"})
+
+        assert deleted == 1  # one host_status row removed
+        hosts = {r["host"] for r in state.get_host_status()}
+        assert hosts == {"prod"}
+
+    def test_purge_removes_orphaned_pending_updates_only(self):
+        """D3: a removed host's *pending* update rows are dropped, but its
+        *resolved* (historical) rows are preserved as an audit trail.
+
+        Seeding follows the per-host call pattern used by ``run_check`` and
+        passes ``existing_containers`` so the pending rows seed survives
+        (otherwise the "remove-container" cleanup in ``process_scan`` would
+        delete them as absent).
+        """
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        retired_pending = _make_update(container_name="web", host="retired")
+        retired_resolved = _make_update(
+            container_name="old-web", host="retired",
+            current_version="8.0.0", new_version="9.9.9",
+        )
+        # A pending row on a *configured* host must survive the purge.
+        keep = _make_update(container_name="web", host="prod")
+
+        # All retired-host containers "exist" in docker this cycle so
+        # process_scan's removal cleanup leaves the seeded pending rows alone.
+        state.process_scan(
+            [retired_pending, retired_resolved], scan_time=t1, host="retired",
+            existing_containers={"web", "old-web"},
+        )
+        state.process_scan([keep], scan_time=t1, host="prod")
+
+        # Force retired_resolved into a resolved state so the purge's
+        # "keep resolved" path is actually exercised (mark_notified alone
+        # only sets notified_at, not resolved_at).
+        resolved_ts = (t1 + timedelta(seconds=1)).isoformat()
+        with state._conn_lock:
+            conn = state._connect()
+            conn.execute(
+                "UPDATE updates SET resolved_at=? WHERE host='retired' "
+                "AND container_name='old-web'",
+                (resolved_ts,),
+            )
+            conn.commit()
+
+        deleted = state.purge_orphaned_hosts({"local", "prod"})
+
+        remaining = {(r["host"], r["container_name"]) for r in state.get_all_updates()}
+        # Retired's PENDING row (web) was purged…
+        assert ("retired", "web") not in remaining
+        # …its resolved row (old-web) was preserved (audit trail)…
+        assert ("retired", "old-web") in remaining
+        # …and the configured host's pending row is untouched.
+        assert ("prod", "web") in remaining
+        # Only the one orphaned *pending* row was deleted; resolved rows kept.
+        assert deleted == 1
+
+    def test_purge_noop_when_all_configured(self):
+        state.upsert_host_status("local", True, None, "2026-01-01T00:00:00+00:00")
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+
+        assert state.purge_orphaned_hosts({"local", "prod"}) == 0
+        assert {r["host"] for r in state.get_host_status()} == {"local", "prod"}
+
+    def test_purge_empty_configured_set_is_noop(self):
+        """Safety: an empty configured set must NOT wipe every host's rows."""
+        state.upsert_host_status("prod", True, None, "2026-01-01T00:00:00+00:00")
+
+        assert state.purge_orphaned_hosts(set()) == 0
+        assert state.get_host_status()
+
+    def test_purge_is_idempotent(self):
+        state.upsert_host_status("retired", True, None, "2026-01-01T00:00:00+00:00")
+
+        assert state.purge_orphaned_hosts({"local"}) == 1
+        assert state.purge_orphaned_hosts({"local"}) == 0  # nothing left to remove
+
+
+class TestEventCooldowns:
+    def test_get_event_last_fired_defaults_none_then_set(self):
+        assert state.get_event_last_fired("host:prod") is None
+        state.set_event_last_fired("host:prod", "2026-01-01T00:00:00+00:00")
+        assert state.get_event_last_fired("host:prod") == "2026-01-01T00:00:00+00:00"
+
+    def test_set_event_last_fired_updates_existing(self):
+        state.set_event_last_fired("host:prod", "2026-01-01T00:00:00+00:00")
+        state.set_event_last_fired("host:prod", "2026-01-02T00:00:00+00:00")
+        assert state.get_event_last_fired("host:prod") == "2026-01-02T00:00:00+00:00"
+
+    def test_event_last_fired_is_key_scoped(self):
+        state.set_event_last_fired("host:a", "2026-01-01T00:00:00+00:00")
+        assert state.get_event_last_fired("host:b") is None
+        assert state.get_event_last_fired("host:a") == "2026-01-01T00:00:00+00:00"
+
+
+class TestDigestsSchemaUnchanged:
+    def test_digests_schema_unchanged(self):
+        """Task 03 AC6: the digests table has no host column and keeps its PK."""
+        rows = state.get_stored_digest("nginx", "latest")  # ensures _connect runs
+        assert rows is None
+        cols = {r[1] for r in state._conn.execute("PRAGMA table_info(digests)").fetchall()}
+        assert cols == {"image", "tag", "digest", "updated_at"}
+        assert "host" not in cols

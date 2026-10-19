@@ -574,6 +574,170 @@ class TestStateCleanupOnFailure:
         """The fixture also restores state when the test body completes normally."""
         from app.health import _state, _state_lock
 
+
+class TestMultiHostDashboard:
+    """Task 06: Host column, status strip, sort order, and API endpoints."""
+
+    _base = {
+        "service_name": "",
+        "stack": "s",
+        "image": "img",
+        "current_version": "1.0",
+        "new_version": "2.0",
+        "update_type": "major",
+        "status": "new",
+        "first_seen_at": "2026-04-30T10:00:00",
+    }
+
+    def _update(self, **kwargs):
+        return {**self._base, **kwargs}
+
+    @patch("app.dashboard.get_all_updates")
+    def test_updates_include_host_in_page_and_api(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="a1", host="local", stack="s"),
+            self._update(container_name="a2", host="prod", stack="s"),
+        ]
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert "local" in html
+        assert "prod" in html
+        assert "host-badge" in html
+
+        api = json.loads(client.get("/api/updates").data)
+        hosts = {r["host"] for r in api}
+        assert hosts == {"local", "prod"}
+
+    @patch("app.dashboard.get_all_updates")
+    def test_sort_order_by_host_then_stack_then_container(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="b1", host="prod", stack="zeta"),
+            self._update(container_name="b2", host="prod", stack="alpha"),
+            self._update(container_name="b3", host="local", stack="zeta"),
+            self._update(container_name="b4", host="local", stack="alpha"),
+            self._update(container_name="b5", host="local", stack="alpha"),
+        ]
+        api = json.loads(client.get("/api/updates").data)
+        order = [(r["host"], r["stack"], r["container_name"]) for r in api]
+        assert order == [
+            ("local", "alpha", "b4"),
+            ("local", "alpha", "b5"),
+            ("local", "zeta", "b3"),
+            ("prod", "alpha", "b2"),
+            ("prod", "zeta", "b1"),
+        ]
+
+    @patch("app.dashboard.get_all_updates")
+    def test_host_badge_color_deterministic(self, mock_updates, client):
+        mock_updates.return_value = [
+            self._update(container_name="x1", host="prod"),
+            self._update(container_name="x2", host="prod"),
+        ]
+        html = client.get("/").data.decode()
+        assert html.count("prod") >= 2
+        # Same host name → same badge class, on both rows
+        import re
+        badge_matches = re.findall(r'<span class="host-badge (host-badge-\d+)">prod</span>', html)
+        assert len(badge_matches) == 2
+        assert len(set(badge_matches)) == 1
+        # And the same class on a second request (stable across reloads)
+        html2 = client.get("/").data.decode()
+        badge_matches2 = re.findall(r'<span class="host-badge (host-badge-\d+)">prod</span>', html2)
+        assert badge_matches2 == badge_matches
+
+    def test_status_strip_lists_all_hosts(self, client):
+        """1 reachable + 1 unreachable seeded in host_status → both render."""
+        from app import state as state_mod
+        state_mod.upsert_host_status("local", True, None, "2026-04-30T10:00:00+00:00")
+        state_mod.upsert_host_status("prod", False, "ssh: timeout", "2026-04-30T10:00:00+00:00")
+        with patch("app.dashboard.get_all_updates", return_value=[]):
+            html = client.get("/").data.decode()
+        assert 'id="host-strip"' in html
+        assert 'data-host="local"' in html
+        assert 'data-host="prod"' in html
+        assert "dot--up" in html
+        assert "dot--down" in html
+
+    def test_status_strip_shows_error_when_unreachable(self, client):
+        from app import state as state_mod
+        # Naive timestamps avoid the tz-localization step in _format_datetime.
+        state_mod.upsert_host_status("local", True, None, "2026-04-30T10:00:00")
+        state_mod.upsert_host_status("prod", False, "ssh: timeout", "2026-04-30T11:30:00")
+        with patch("app.dashboard.get_all_updates", return_value=[]):
+            html = client.get("/").data.decode()
+        assert "unreachable since" in html
+        assert "ssh: timeout" in html
+        assert "30/04/2026 11:30" in html
+
+    def test_status_strip_since_uses_transition_time_not_latest_scan(self, client):
+        """QA D2: 'unreachable since' shows down_since (start of the outage),
+        not checked_at (the latest scan). When down_since is unset the label
+        falls back to checked_at."""
+        from app import state as state_mod
+        # Distinct naive timestamps: down_since is 10:00 (transition), the
+        # latest check (checked_at) advanced to 11:30.
+        state_mod.upsert_host_status(
+            "prod", False, "ssh: timeout", "2026-04-30T11:30:00",
+            down_since="2026-04-30T10:00:00",
+        )
+        with patch("app.dashboard.get_all_updates", return_value=[]):
+            html = client.get("/").data.decode()
+        assert "unreachable since" in html
+        assert "30/04/2026 10:00" in html   # transition time (down_since)
+        assert "30/04/2026 11:30" not in html  # not the latest check
+
+    def test_status_strip_independent_of_updates(self, client):
+        """A down host with zero pending updates still appears in the strip."""
+        from app import state as state_mod
+        state_mod.upsert_host_status("alpha", False, "dial tcp: no route", "2026-04-30T10:00:00+00:00")
+        with patch("app.dashboard.get_all_updates", return_value=[]):
+            html = client.get("/").data.decode()
+        assert 'data-host="alpha"' in html
+        # and the "no updates" empty state still renders alongside
+        assert "No updates found" in html
+
+    def test_status_strip_defaults_to_unknown_when_no_scan_yet(self, client):
+        """Before any host_status row exists every configured host is listed as unknown."""
+        with patch("app.dashboard.get_all_updates", return_value=[]):
+            html = client.get("/").data.decode()
+        assert 'id="host-strip"' in html
+        assert 'data-host="local"' in html
+        assert "dot--unknown" in html
+
+    def test_api_host_status_endpoint(self, client):
+        from app import state as state_mod
+        state_mod.upsert_host_status("local", True, None, "2026-04-30T10:00:00+00:00")
+        state_mod.upsert_host_status("prod", False, "ssh: timeout", "2026-04-30T10:00:00+00:00")
+        resp = client.get("/api/host-status")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert isinstance(data, list)
+        rows = {r["host"]: r for r in data}
+        assert set(rows) == {"local", "prod"}
+        assert rows["local"]["reachable"] is True
+        assert rows["prod"]["reachable"] is False
+        assert rows["prod"]["error"] == "ssh: timeout"
+
+    def test_single_local_host_no_regressions(self, client):
+        """Baseline counts + scan timestamps unchanged for a single local host."""
+        from app import state as state_mod
+        state_mod.upsert_host_status("local", True, None, "2026-04-30T10:00:00")
+        from app.health import _state, _state_lock
+        with _state_lock:
+            # Naive (no +00:00 suffix) so _format_datetime does not apply a TZ
+            # conversion and the display is stable across test environments.
+            _state["last_check"] = "2026-04-30T10:00:00"
+        with patch("app.dashboard.get_all_updates", return_value=[
+            self._update(container_name="a", host="local", status="new"),
+            self._update(container_name="b", host="local", status="known"),
+            self._update(container_name="c", host="local", status="resolved"),
+        ]):
+            html = client.get("/").data.decode()
+        assert ">1<" in html  # new count
+        assert "30/04/2026 10:00" in html
+        assert "Last scan: 30/04/2026 10:00" in html
+        assert "No updates found" not in html
+
         with _state_lock:
             _state["warnings"] = [{"sentinel": "original"}]
 

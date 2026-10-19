@@ -45,9 +45,8 @@ def main() -> None:
     # Restore last_check from persistent storage
     persisted_last_check = load_last_check()
     if persisted_last_check:
-        from datetime import datetime as _dt
         try:
-            lc = _dt.fromisoformat(persisted_last_check.replace("Z", "+00:00"))
+            lc = datetime.fromisoformat(persisted_last_check.replace("Z", "+00:00"))
             update_state(last_check=lc)
         except (ValueError, TypeError):
             pass

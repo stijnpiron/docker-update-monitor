@@ -7,6 +7,7 @@ import app.metrics as metrics_mod
 from app.metrics import (
     containers_monitored,
     updates_available,
+    host_reachable,
     check_duration_seconds,
     check_errors_total,
     last_check_timestamp_seconds,
@@ -19,12 +20,16 @@ from app.models import UpdateInfo
 
 @pytest.fixture(autouse=True)
 def reset_seen_types():
-    """Reset the _seen_update_types tracking set and zero all update_type gauges between tests."""
-    metrics_mod._seen_update_types = set()
+    """Reset the seen-label tracking sets and zero all labelled gauges between tests."""
+    metrics_mod._seen_update_labels = set()
+    metrics_mod._seen_hosts = set()
     for child in list(metrics_mod.updates_available._metrics.values()):
         child.set(0)
+    for child in list(metrics_mod.host_reachable._metrics.values()):
+        child.set(0)
     yield
-    metrics_mod._seen_update_types = set()
+    metrics_mod._seen_update_labels = set()
+    metrics_mod._seen_hosts = set()
 
 
 @pytest.fixture
@@ -59,31 +64,24 @@ class TestUpdateAfterScanGauges:
             {"status": "new", "update_type": "minor"},
         ]
         update_after_scan(monitored=3, updates=updates, duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="patch")._value.get() == 2.0
-        assert updates_available.labels(type="minor")._value.get() == 1.0
-
-    def test_counts_updates_by_type_from_update_info_objects(self):
-        u1 = UpdateInfo("c1", "s", "st", "img", "1.0", "2.0", "major", status="new")
-        u2 = UpdateInfo("c2", "s", "st", "img", "1.0", "1.1", "minor", status="known")
-        update_after_scan(monitored=2, updates=[u1, u2], duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="major")._value.get() == 1.0
-        assert updates_available.labels(type="minor")._value.get() == 1.0
+        assert updates_available.labels(type="patch", host="local")._value.get() == 2.0
+        assert updates_available.labels(type="minor", host="local")._value.get() == 1.0
 
     def test_resolved_updates_excluded_from_count(self):
         updates = [{"status": "resolved", "update_type": "major"}]
         update_after_scan(monitored=1, updates=updates, duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="major")._value.get() == 0.0
+        assert updates_available.labels(type="major", host="local")._value.get() == 0.0
 
-    def test_zeroes_out_types_no_longer_present(self):
+    def test_zeroes_out_labels_no_longer_present(self):
         updates1 = [
             {"status": "new", "update_type": "patch"},
             {"status": "known", "update_type": "patch"},
         ]
         update_after_scan(monitored=2, updates=updates1, duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="patch")._value.get() == 2.0
+        assert updates_available.labels(type="patch", host="local")._value.get() == 2.0
 
         update_after_scan(monitored=0, updates=[], duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="patch")._value.get() == 0.0
+        assert updates_available.labels(type="patch", host="local")._value.get() == 0.0
 
     def test_multiple_update_types(self):
         updates = [
@@ -94,10 +92,96 @@ class TestUpdateAfterScanGauges:
             {"status": "new", "update_type": "digest"},
         ]
         update_after_scan(monitored=5, updates=updates, duration_seconds=0.0, last_check_ts=0.0)
-        assert updates_available.labels(type="patch")._value.get() == 1.0
-        assert updates_available.labels(type="minor")._value.get() == 2.0
-        assert updates_available.labels(type="major")._value.get() == 1.0
-        assert updates_available.labels(type="digest")._value.get() == 1.0
+        assert updates_available.labels(type="patch", host="local")._value.get() == 1.0
+        assert updates_available.labels(type="minor", host="local")._value.get() == 2.0
+        assert updates_available.labels(type="major", host="local")._value.get() == 1.0
+        assert updates_available.labels(type="digest", host="local")._value.get() == 1.0
+
+
+class TestHostLabels:
+    """Host-aware metrics: dum_host_reachable + host-labelled dum_updates_available."""
+
+    # AC1 — dum_host_reachable gauge is set per host with 0/1 values.
+    def test_host_reachable_gauge_set_per_host(self):
+        hs = [
+            {"host": "local", "reachable": True, "error": None},
+            {"host": "prod-1", "reachable": False, "error": "ssh: timeout"},
+        ]
+        update_after_scan(monitored=0, updates=[], duration_seconds=0.0, last_check_ts=0.0, host_status=hs)
+        assert host_reachable.labels(host="local")._value.get() == 1.0
+        assert host_reachable.labels(host="prod-1")._value.get() == 0.0
+
+    # AC2 — per-host pending counts labelled by (host, type).
+    def test_updates_available_labelled_by_host_and_type(self):
+        updates = [
+            {"status": "new", "update_type": "patch", "host": "local"},
+            {"status": "new", "update_type": "patch", "host": "local"},
+            {"status": "new", "update_type": "minor", "host": "prod-1"},
+            {"status": "resolved", "update_type": "major", "host": "prod-1"},  # excluded
+        ]
+        update_after_scan(monitored=4, updates=updates, duration_seconds=0.0, last_check_ts=0.0)
+        assert updates_available.labels(type="patch", host="local")._value.get() == 2.0
+        assert updates_available.labels(type="minor", host="prod-1")._value.get() == 1.0
+        # Resolved is not counted, so (major, prod-1) never gets a live label.
+        assert updates_available.labels(type="major", host="prod-1")._value.get() == 0.0
+
+    # AC3 — a host present in one scan and removed in the next is zeroed/removal.
+    def test_stale_host_labels_zeroed(self):
+        scan1 = [
+            {"status": "new", "update_type": "patch", "host": "local"},
+            {"status": "new", "update_type": "patch", "host": "prod-1"},
+        ]
+        hs1 = [
+            {"host": "local", "reachable": True, "error": None},
+            {"host": "prod-1", "reachable": True, "error": None},
+        ]
+        update_after_scan(monitored=2, updates=scan1, duration_seconds=0.0, last_check_ts=0.0, host_status=hs1)
+        assert updates_available.labels(type="patch", host="prod-1")._value.get() == 1.0
+        assert host_reachable.labels(host="prod-1")._value.get() == 1.0
+
+        # Next scan: prod-1 dropped from config → its DB/host_status rows filtered
+        # out by the caller, so it is absent from both inputs.
+        scan2 = [{"status": "new", "update_type": "patch", "host": "local"}]
+        hs2 = [{"host": "local", "reachable": True, "error": None}]
+        update_after_scan(monitored=1, updates=scan2, duration_seconds=0.0, last_check_ts=0.0, host_status=hs2)
+        assert updates_available.labels(type="patch", host="prod-1")._value.get() == 0.0
+        assert host_reachable.labels(host="prod-1")._value.get() == 0.0
+        # local unaffected
+        assert updates_available.labels(type="patch", host="local")._value.get() == 1.0
+        assert host_reachable.labels(host="local")._value.get() == 1.0
+
+    # AC4 — global aggregate metrics are unchanged by the host feature.
+    def test_global_metrics_unchanged(self):
+        update_after_scan(
+            monitored=9,
+            updates=[{"status": "new", "update_type": "patch", "host": "local"}],
+            duration_seconds=3.5,
+            last_check_ts=1700000000.0,
+        )
+        assert containers_monitored._value.get() == 9.0
+        assert abs(check_duration_seconds._value.get() - 3.5) < 1e-6
+        assert last_check_timestamp_seconds._value.get() == 1700000000.0
+
+    # AC5 — single local host: only host="local" label is emitted.
+    def test_single_host_backwards_compatible_labels(self):
+        updates = [
+            {"status": "new", "update_type": "patch", "host": "local"},
+            {"status": "new", "update_type": "minor", "host": "local"},
+        ]
+        hs = [{"host": "local", "reachable": True, "error": None}]
+        update_after_scan(monitored=2, updates=updates, duration_seconds=0.0, last_check_ts=0.0, host_status=hs)
+
+        # Only non-zero series count as "active" — zeroed/stale series remain in
+        # the registry with a 0 value (that is the intended zero-out behavior).
+        ua_active = {k: m._value.get() for k, m in updates_available._metrics.items()
+                     if m._value.get() > 0}                 # {(type, host): count}
+        hr_active = {k[0]: m._value.get() for k, m in host_reachable._metrics.items()
+                     if m._value.get() > 0}                 # {host: 1/0}
+        assert all(h == "local" for _t, h in ua_active)
+        assert all(h == "local" for h in hr_active)
+        # The type dimension is still present (superset of the previous surface).
+        assert {"patch", "minor"} <= {t for t, _h in ua_active}
+        assert hr_active.get("local") == 1
 
 
 class TestCheckErrorsCounter:

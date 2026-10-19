@@ -42,11 +42,10 @@ payload to a webhook when updates are found.
 
 Pre-built images are published to `ghcr.io/stijnpiron/docker-update-monitor` for the following platforms:
 
-| Platform       | Hardware                                                             |
-| -------------- | -------------------------------------------------------------------- |
-| `linux/amd64`  | x86-64 servers, cloud VMs, desktop Docker (Linux/Windows/Mac Intel)  |
-| `linux/arm64`  | Raspberry Pi 4 / 5, Apple Silicon (via Docker Desktop), AWS Graviton |
-| `linux/arm/v7` | Raspberry Pi 2 / 3 running 32-bit Raspberry Pi OS                    |
+| Platform      | Hardware                                                             |
+| ------------- | -------------------------------------------------------------------- |
+| `linux/amd64` | x86-64 servers, cloud VMs, desktop Docker (Linux/Windows/Mac Intel)  |
+| `linux/arm64` | Raspberry Pi 4 / 5, Apple Silicon (via Docker Desktop), AWS Graviton |
 
 Docker automatically selects the correct image variant for your hardware — no `--platform` flag required.
 
@@ -116,12 +115,12 @@ services:
 
 ### Detection mode reference
 
-| Labels set | Tag matches regex? | Mode used |
-|---|---|---|
-| `tag-regex` only | Yes | Semver |
-| `tag-regex` only | No | Implicit digest (scan-to-scan comparison) |
-| `mode: digest` only | — | Explicit digest (RepoDigests vs registry) |
-| `mode: digest` + `tag-regex` | Any | Explicit digest (semver bypassed; regex used only for version resolution) |
+| Labels set                   | Tag matches regex? | Mode used                                                                 |
+| ---------------------------- | ------------------ | ------------------------------------------------------------------------- |
+| `tag-regex` only             | Yes                | Semver                                                                    |
+| `tag-regex` only             | No                 | Implicit digest (scan-to-scan comparison)                                 |
+| `mode: digest` only          | —                  | Explicit digest (RepoDigests vs registry)                                 |
+| `mode: digest` + `tag-regex` | Any                | Explicit digest (semver bypassed; regex used only for version resolution) |
 
 > **Explicit vs implicit digest:** The explicit `mode: digest` label compares the running image's local digest against the registry on every scan, including the first. The implicit fallback (tag doesn't match `tag-regex`) compares the registry digest across two consecutive scans and is silent on the first. Use `mode: digest` when your container exclusively uses rolling tags and you want immediate detection.
 
@@ -149,22 +148,16 @@ update-level finding for one container:
   {
     "container_name": "sonarr",
     "stack": "media",
+    "host": "local",
     "image": "linuxserver/sonarr",
     "current_version": "4.0.2.1183",
     "new_version": "4.0.9.1835",
     "update_type": "patch"
   },
   {
-    "container_name": "sonarr",
-    "stack": "media",
-    "image": "linuxserver/sonarr",
-    "current_version": "4.0.2.1183",
-    "new_version": "4.1.0.2000",
-    "update_type": "minor"
-  },
-  {
     "container_name": "nginx",
     "stack": "proxy",
+    "host": "prod",
     "image": "library/nginx",
     "current_version": "1.25.3",
     "new_version": "1.27.4",
@@ -173,7 +166,27 @@ update-level finding for one container:
 ]
 ```
 
-`update_type` is one of `patch`, `minor`, `major`, or `digest`.
+`update_type` is one of `patch`, `minor`, `major`, or `digest`. Each row carries
+a `host` field — the daemon the finding came from (`local`, or a name from
+`DOCKER_HOSTS`).
+
+In addition to the update payload, a host that becomes unreachable raises a
+separate **host-status** alert, and a host that comes back up raises a
+`recovered` alert:
+
+```json
+{
+  "type": "host_status",
+  "host": "prod",
+  "event": "down",
+  "error": "ssh: Connection timed out"
+}
+```
+
+`event` is `down` or `recovered`. These alerts are coalesced per host by
+`HOST_REACH_COOLDOWN`. For consumers of the payload: `error` is only
+meaningful when `event` is `down` (it carries the connection failure
+message); for `recovered` events it is always `null`.
 
 For digest updates the `new_version` field contains either a resolved versioned tag (when one
 could be matched to the new digest) or the raw registry digest (`sha256:…`).
@@ -198,12 +211,285 @@ could be matched to the new digest) or the raw registry digest (`sha256:…`).
 | `LOG_LEVEL`          | `INFO`           | `DEBUG` / `INFO` / `WARNING` / `ERROR`                                                                                                                                                                     |
 | `WEB_PORT`           | `8080`           | Port for the web dashboard and health endpoint                                                                                                                                                             |
 
+### Multi-host scanning over SSH (optional)
+
+By default the monitor scans only the local Docker socket. Set `DOCKER_HOSTS` to
+also scan one or more remote daemons over SSH from this single instance, all on
+the same `CRON_SCHEDULE`:
+
+| Variable              | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKER_HOSTS`        | _(empty)_ | Comma-separated `name=ssh://user@host` pairs scanned in addition to the local daemon. Each `name` is the stable per-host label (shown in the dashboard and notifications), restricted to `A-Za-z0-9._-`, and must be unique and not collide with the local daemon's name (see `LOCAL_HOST_NAME`). Only the `ssh://` scheme is supported. When unset, behavior is identical to before this feature (local only).                                                                                                                                                                                                                                                            |
+| `HOST_REACH_COOLDOWN` | `1h`      | Re-alert window for a host down/recovered alert. Accepted formats: `15m`, `1h`, `2d`, `1w`. A repeat transition for the same host inside this window is coalesced (no new alert); after it elapses the alert refires.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `LOCAL_HOST_NAME`     | `local`   | Label used for the local daemon in the dashboard, webhook payloads, and the `host` Prometheus label (where the default `local` used to appear). Same character set and uniqueness rules as `DOCKER_HOSTS` names — a remote host cannot reuse it (fails fast at startup). When you first set a new value, a one-time data migration renames the `local` rows already stored in `data/state.db` so existing update history, host-status rows, and down/recovered alert continuity follow the new name. Set it in your secret manager (Infisical or similar) alongside the other `DOCKER_HOSTS`-related values; it is a plain env var like every other setting in this table. |
+
+**Working example** — scan the local daemon plus two remote hosts:
+
+```
+DOCKER_HOSTS=prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host
+HOST_REACH_COOLDOWN=1h
+```
+
+**Renaming the local daemon** — label the local daemon `home-node` instead of
+`local` (existing history migrates to the new label on first run):
+
+```
+LOCAL_HOST_NAME=home-node
+```
+
+The value lives in the same `.env` (or Infisical) as `DOCKER_HOSTS`; no code
+or image change is required. `local` remains a perfectly good name for a
+_remote_ host once the local daemon has been renamed.
+
+**Validation (fail fast at startup).** A malformed `DOCKER_HOSTS` value — a pair
+missing `=`, a duplicate host name, a name equal to the local daemon's name
+(the `LOCAL_HOST_NAME` value, default `local`), a name with invalid characters,
+an empty name, or a `docker_host_url` scheme other than `ssh://` — is logged
+and exits with status `1` before the scheduler starts, the same way an invalid
+`CRON_SCHEDULE` does. It is never silently dropped and discovered later as
+"host unreachable". A `LOCAL_HOST_NAME` with invalid characters fails the same
+way.
+
+**SSH setup — step by step.** The monitor image bundles `openssh-client`. The
+scanner builds each remote `DockerClient` with `use_ssh_client=True`, so the
+system `ssh` binary resolves identity per host from a standard `~/.ssh/config`
+— no key material ever appears in `DOCKER_HOSTS`. There are at most two machines
+you touch per remote host:
+
+| Machine                                                         | Role        | What you do here                                                                                                                                                     |
+| --------------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Monitor host** — the box running the `docker compose` service | Client side | Set the env vars, create the SSH config + per-host key files, mount them, (re)start the service                                                                      |
+| **Remote Docker host** — e.g. `prod-host`                       | Server side | Ensure the user you SSH in as can run `docker` commands (i.e. is root or in the `docker` group), and that user's `authorized_keys` contains the monitor's public key |
+
+Work through it in order. Replace `prod-host`, `monitor`, and `ssh_prod_key`
+with your own values. Step 1 creates the key; step 2 installs its public half
+on each remote — that's the step the `authorized_keys` line in the table above
+refers to.
+
+**1. Monitor host — generate one private key per remote host.** One key per
+remote host so a leaked key only exposes one daemon. Create them on the monitor
+host (their paths are the `./config/ssh/…` files the compose service mounts in
+step 5). Do this first, because step 2 installs each remote's _public_ half.
+
+```bash
+# on the monitor host
+mkdir -p ./config/ssh/.ssh
+ssh-keygen -t ed25519 -N '' -f ./config/ssh/ssh_prod_key     # private  (keep 600)
+# repeat one per remote host:
+# ssh-keygen -t ed25519 -N '' -f ./config/ssh/ssh_nas_key
+```
+
+**2. Remote Docker host — install the public key (and allow docker).** Install
+each remote's public half into that host's `authorized_keys`, and confirm the
+account can reach the daemon. Run this **from the monitor host** — it `ssh`es
+out to the remote, so it changes the remote box.
+
+```bash
+# on the monitor host — install prod-host's public half
+ssh-copy-id -i ./config/ssh/ssh_prod_key.pub monitor@prod-host
+# one per remote host:
+# ssh-copy-id -i ./config/ssh/ssh_nas_key.pub  monitor@nas-host
+```
+
+If you don't have `ssh-copy-id`, the equivalent is:
+
+```bash
+ssh monitor@prod-host 'umask 077; mkdir -p ~/.ssh'
+cat ./config/ssh/ssh_prod_key.pub | ssh monitor@prod-host \
+    'cat >> ~/.ssh/authorized_keys'
+```
+
+The first connection to each host will normally ask for that account's password
+once; key auth (what the monitor uses afterwards) then needs no password.
+If it instead fails with `Permission denied (publickey)` and _never_ asks for a
+password, the remote's sshd has password auth disabled — `ssh-copy-id` needs one
+interactive login to bootstrap, so install the public half through a channel
+that already gets onto the box (a root/other key, the console, or a temporarily
+re-enabled password), e.g. from the monitor host:
+
+```bash
+cat ./config/ssh/ssh_prod_key.pub | ssh root@prod-host \
+    'install -d -m 700 -o monitor -g monitor /home/monitor/.ssh
+     touch /home/monitor/.ssh/authorized_keys
+     chown monitor:monitor /home/monitor/.ssh/authorized_keys
+     chmod 644 /home/monitor/.ssh/authorized_keys
+     cat >> /home/monitor/.ssh/authorized_keys'
+```
+
+Note: a group- or world-writable `authorized_keys` makes the remote sshd reject
+the key — keep `~/.ssh` at `700` and `authorized_keys` at `600`/`644`.
+
+Give the account docker access (run on the **remote** host, as root):
+
+```bash
+usermod -aG docker monitor
+```
+
+Then prove the whole client path works before you wire up compose — this is the
+same call the monitor makes, and it must print a version:
+
+```bash
+ssh -i ./config/ssh/ssh_prod_key -o BatchMode=yes monitor@prod-host \
+    'docker version --format "{{.Server.Version}}"'
+```
+
+If that prints a version, the remote side is fully ready. The private key only
+ever exists on the monitor host; each remote gets only the public half that
+corresponds to it. Blast-radius isolation comes from one private key per `Host`
+block, not from separate remote accounts — a single dedicated `monitor` account
+per fleet is fine.
+
+**3. Monitor host — write the shared SSH config + a writable
+`known_hosts`.** Two files, both on the monitor host. The config maps each
+`Host <alias>` to its per-host key and to the pinned `known_hosts`.
+`UserKnownHostsFile` + `StrictHostKeyChecking accept-new` is the
+**default, recommended** setup — it records each remote's host key on first
+contact (one warning) and afterwards _refuses_ a connection whose host key has
+changed (the change is recorded, the host is marked `unreachable`). This is
+stronger than the old read-only default, which only warned and never verified.
+
+```bash
+# on the monitor host
+cat > ./config/ssh/.ssh/config <<'EOF'
+Host prod-host
+    IdentityFile /run/secrets/ssh_prod_key
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile /home/ssh/known_hosts
+
+Host nas-host
+    IdentityFile /run/secrets/ssh_nas_key
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile /home/ssh/known_hosts
+EOF
+touch ./config/ssh/known_hosts          # starts EMPTY on purpose
+sudo chown root:root ./config/ssh/.ssh/config
+chmod 644 ./config/ssh/.ssh/config
+```
+
+- **The config file's owner matters, not just its mode.** OpenSSH refuses to
+  read a user config file unless it is owned by `root` **or** by the account
+  running `ssh` (`nobody`, uid 65534 in this image) — any other owner fails
+  with `Bad owner or permissions on /home/ssh/.ssh/config`, even at `644`, and
+  every host is recorded unreachable. `chown root:root` (above) is the
+  simplest fix since `root` always satisfies the check regardless of the
+  container's uid. Also keep the mode free of group/other **write** bits
+  (`644`/`600` are fine, `664`/`646` are not).
+- The second file, `./config/ssh/known_hosts`, gets **nothing from you — it
+  starts empty on purpose**. On the first connection, `accept-new` records each
+  remote's host key into it automatically (you'll see one warning per host in
+  the logs); afterwards every connection is checked against the recorded key
+  and a mismatch is refused. Leave the file writable (that's what lets ssh
+  write into it). You can inspect it any time — one line per host, e.g.
+  `prod-host ssh-ed25519 AAAA...`. **Never** hand-edit it, and if a host key
+  _legitimately_ changes (host rebuilt), delete just that one line — or the
+  host will stay `unreachable`.
+- **The `Host <pattern>` line must match the literal connect string** — the
+  part after `@` in the `ssh://user@host` URL you put in `DOCKER_HOSTS` — NOT
+  the dashboard `name=` label before the `=`. These only look the same when
+  that part is a DNS alias (e.g. `ssh://monitor@prod-host` → `Host
+prod-host`). If you instead connect by IP (`ssh://docker-adm@192.168.1.44`),
+  the block must be `Host 192.168.1.44`; a `Host` line matching the dashboard
+  label alone never matches, so ssh falls back to its non-`accept-new`
+  default and fails hard with `Host key verification failed` in the
+  non-interactive session docker-py spawns. Want to keep a friendly alias as
+  the `Host` name anyway? Add `HostName 192.168.1.44` inside the block.
+- The paths inside the config (`/run/secrets/…`, `/home/ssh/known_hosts`) are
+  **in-container** paths; the _source_ files on the monitor host are the
+  relative `./config/ssh/…` paths, wired to those container paths in step 5.
+
+**4. Monitor host — set the environment variables.** In the `.env` file next to
+`docker-compose.yml` (or your Infisical/secret store that injects the service's
+env):
+
+```bash
+DOCKER_HOSTS=prod=ssh://monitor@prod-host,nas=ssh://monitor@nas-host
+HOST_REACH_COOLDOWN=1h
+# Optional: rename the local daemon's label (default "local")
+# LOCAL_HOST_NAME=home-node
+```
+
+**5. Monitor host — wire the volumes, secrets, and service env in
+`docker-compose.yml`.** Uncomment/enable the three commented blocks in
+`docker-compose.yml`. Every `./config/ssh/…` path below resolves **relative to
+the compose file itself** — the keys, the SSH config, and `known_hosts` must
+live in a `config/ssh/` directory _next to the `docker-compose.yml` you
+deploy_, not in your `~` (files built elsewhere fail at deploy with
+`bind source path does not exist: …/config/ssh/…`).
+
+- the service `environment` line for `DOCKER_HOSTS` (and, optionally,
+  `LOCAL_HOST_NAME`),
+- the service `volumes` entry that mounts the config read-only **and** the
+  `known_hosts` file writable,
+- the service `secrets:` list plus the top-level `secrets:` block that maps each
+  key file into `/run/secrets/…`.
+
+The exact entries are commented in `docker-compose.yml`; together they become:
+
+```yaml
+volumes:
+  - ./config/ssh/.ssh:/home/ssh/.ssh:ro # config is read-only
+  - ./config/ssh/known_hosts:/home/ssh/known_hosts # writable (no :ro) → pinning works
+secrets:
+  - ssh_prod_key
+  - ssh_nas_key
+```
+
+and at top level:
+
+```yaml
+secrets:
+  ssh_prod_key:
+    file: ./config/ssh/ssh_prod_key
+  ssh_nas_key:
+    file: ./config/ssh/ssh_nas_key
+```
+
+**The key must be world-readable on the host.** Under plain `docker compose up`
+(not `docker stack deploy`/Swarm), a `file:` secret is a **bind mount of the
+host file** — Compose's own docs note `uid`/`gid`/`mode` are only honored for
+`environment:`-sourced secrets and are silently ignored for `file:` ones. So
+the container sees the host key's exact owner and mode; it is **not**
+published as `root:root 0444` (that behavior is Swarm-only). Since the
+container runs `ssh` as `nobody` (uid 65534):
+
+```bash
+chmod 644 ./config/ssh/ssh_prod_key ./config/ssh/ssh_nas_key
+```
+
+The owner can stay whoever created the key (e.g. your deploy user) — OpenSSH's
+private-key safety check only rejects a key _owned by_ the running user
+(`nobody`) with group/other bits set, so a non-`nobody` owner plus `644` is
+safe. Skipping this leaves the key unreadable by `nobody` and every connect
+fails with `Load key "/run/secrets/…": Permission denied` /
+`Permission denied (publickey)`.
+
+**6. Monitor host — (re)start and verify.**
+
+```bash
+docker compose up -d
+docker logs docker-update-monitor | grep -i 'host\|ssh'
+# or hit the dashboard /metrics
+```
+
+Each host appears in the dashboard status strip and the
+`dum_host_reachable{host}` gauge. The first scan records each remote's host
+key into `known_hosts` (a one-time warning in the logs); later scans are silent,
+and a host that changes its key thereafter fails and is shown `unreachable`.
+If a host is `unreachable`, the dashboard row carries the exact ssh error
+(typically a missing config/key mount, a `Host <alias>` name mismatch, or a
+key that wasn't authorized on the remote).
+
+**Unreachable hosts** are skipped (never fatal), recorded per host in
+`host_status`, and surfaced in the dashboard status strip. A **host down**
+transition raises one "unreachable" alert; a **recovered** transition raises one
+"recovered" alert; both are coalesced by `HOST_REACH_COOLDOWN`.
+
 ### Webhook channel
 
-| Variable            | Default   | Description                                      |
-| ------------------- | --------- | ------------------------------------------------ |
-| `NOTIFY_ENDPOINT`   | _(empty)_ | Webhook URL to POST updates to                   |
-| `NOTIFY_AUTH_TYPE`  | _(empty)_ | Auth type: `bearer`, `basic`, or empty (no auth) |
+| Variable            | Default   | Description                                                                                                                       |
+| ------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `NOTIFY_ENDPOINT`   | _(empty)_ | Webhook URL to POST updates to                                                                                                    |
+| `NOTIFY_AUTH_TYPE`  | _(empty)_ | Auth type: `bearer`, `basic`, or empty (no auth)                                                                                  |
 | `NOTIFY_AUTH_TOKEN` | _(empty)_ | Credentials for the `Authorization` header. For `bearer`, the raw token. For `basic`, `user:pass` (base64-encoded automatically). |
 
 ### Email channel (SMTP)
@@ -260,8 +546,9 @@ The monitor includes a built-in web dashboard accessible on port `8080` (configu
 ### Features
 
 - **Summary cards** — containers monitored, new/known/resolved update counts, warnings, not-monitored count
-- **Update table** — all detected updates with stack, container, image, versions, type, status, and first-seen date
-- **Sortable columns** — click any column header to sort; default sort is by stack
+- **Host status strip** — one chip per configured host (green up / red down / grey unknown) with the last error shown for any down host
+- **Update table** — all detected updates with a **Host** column, plus stack, container, image, versions, type, status, and first-seen date
+- **Sortable columns** — click any column header to sort; default sort is by host, then stack
 - **Warnings section** — scan warnings and errors (invalid regex, missing tags, pattern mismatches)
 - **Not Monitored section** — collapsible list of containers without any monitoring label (`tag-regex` or `mode: digest`), with reasons
 - **Scan Now button** — trigger an immediate scan from the UI
@@ -284,26 +571,28 @@ Then open `http://<your-host>:8080` in a browser.
 
 ### API endpoints
 
-| Method | Path           | Description                                      |
-| ------ | -------------- | ------------------------------------------------ |
-| `GET`  | `/`            | Dashboard page (HTML)                            |
-| `GET`  | `/health`      | Liveness check (JSON) — used by Docker HEALTHCHECK. Always `200` while the server is up; body `status` is `"starting"` until the first scan completes, then `"ok"`. |
-| `GET`  | `/api/updates` | All updates with status as JSON array            |
-| `POST` | `/api/scan`    | Trigger immediate scan, returns 202 Accepted     |
-| `GET`  | `/metrics`     | Prometheus metrics (text/plain)                  |
+| Method | Path               | Description                                                                                                                                                         |
+| ------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/`                | Dashboard page (HTML)                                                                                                                                               |
+| `GET`  | `/health`          | Liveness check (JSON) — used by Docker HEALTHCHECK. Always `200` while the server is up; body `status` is `"starting"` until the first scan completes, then `"ok"`. |
+| `GET`  | `/api/updates`     | All updates with status as JSON array (each row includes its `host`)                                                                                                |
+| `GET`  | `/api/host-status` | Per-host reachability snapshot as a JSON array (`host`, `reachable`, `error`, `checked_at`)                                                                         |
+| `POST` | `/api/scan`        | Trigger immediate scan, returns 202 Accepted                                                                                                                        |
+| `GET`  | `/metrics`         | Prometheus metrics (text/plain)                                                                                                                                     |
 
 ### Prometheus metrics
 
 `GET /metrics` exposes the following metrics in Prometheus text format, updated after each scan:
 
-| Metric | Type | Description |
-| ------ | ---- | ----------- |
-| `dum_containers_monitored` | Gauge | Number of containers with update-monitor labels |
-| `dum_updates_available{type}` | Gauge | Active (non-resolved) updates by type (`patch`, `minor`, `major`, `digest`) |
-| `dum_check_duration_seconds` | Gauge | Duration of the last update check in seconds |
-| `dum_check_errors_total` | Counter | Total errors encountered during checks (Docker connection failures, registry warnings) |
-| `dum_last_check_timestamp_seconds` | Gauge | Unix timestamp of the last completed check |
-| `dum_notifications_sent_total{channel}` | Counter | Total notification dispatches by channel (`webhook`, `email`) |
+| Metric                                  | Type    | Description                                                                                                                                                                    |
+| --------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dum_containers_monitored`              | Gauge   | Number of containers with update-monitor labels                                                                                                                                |
+| `dum_updates_available{type,host}`      | Gauge   | Active (non-resolved) updates by type (`patch`, `minor`, `major`, `digest`) and host                                                                                           |
+| `dum_host_reachable{host}`              | Gauge   | Per-host reachability gauge (`1` = reachable, `0` = unreachable). Only present while `DOCKER_HOSTS` scans remote hosts; the local-only default still emits the `local` series. |
+| `dum_check_duration_seconds`            | Gauge   | Duration of the last update check in seconds                                                                                                                                   |
+| `dum_check_errors_total`                | Counter | Total errors encountered during checks (Docker connection failures, registry warnings)                                                                                         |
+| `dum_last_check_timestamp_seconds`      | Gauge   | Unix timestamp of the last completed check                                                                                                                                     |
+| `dum_notifications_sent_total{channel}` | Counter | Total notification dispatches by channel (`webhook`, `email`)                                                                                                                  |
 
 Example Prometheus scrape config:
 

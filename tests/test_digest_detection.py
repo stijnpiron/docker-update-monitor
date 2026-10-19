@@ -883,7 +883,9 @@ class TestFetchPlatformDigest:
 # ---------------------------------------------------------------------------
 
 class TestPlatformDigestExceptionHandling:
-    """Verify that only specific exceptions are caught in the platform digest block."""
+    """Verify the platform digest block's exception scoping, and that the
+    per-host guard in run_check absorbs any unexpected exception so one
+    host's scan failure never escapes run_check() (F1)."""
 
     def _setup_digest_mismatch(self, mock_docker, local_digest="sha256:aabbcc", remote_digest="sha256:ddeeff"):
         """Configure a mock docker client where local != remote digest, triggering platform check."""
@@ -971,9 +973,18 @@ class TestPlatformDigestExceptionHandling:
         mock_fetch_digest.return_value = remote
         mock_platform_digest.side_effect = AttributeError("bad attribute")
 
+        # An unexpected exception raised deep in the scan is no longer allowed
+        # to escape run_check(); the per-host guard catches it, records the
+        # host as unreachable with a 'scan error' message, and lets the rest
+        # of the scan (and any other hosts) complete (F1).
         with patch("app.scanner.notify"), \
              patch.object(config_mod, "GITHUB_TOKEN", ""), \
              patch.object(config_mod, "DOCKERHUB_USER", ""), \
              patch.object(config_mod, "DOCKERHUB_PASS", ""):
-            with pytest.raises(AttributeError, match="bad attribute"):
-                run_check()
+            run_check()  # must not raise
+
+        from app import state as state_mod
+        status = {s["host"]: s for s in state_mod.get_host_status()}
+        assert status["local"]["reachable"] == 0
+        assert "scan error" in status["local"]["error"]
+        assert "bad attribute" in status["local"]["error"]

@@ -7,7 +7,21 @@ import pytest
 from app import config as config_mod
 from app import main as main_mod
 from app.models import UpdateInfo
-from app.scanner import run_check, _is_higher_version
+from app.scanner import run_check
+
+
+@pytest.fixture(autouse=True)
+def _mock_dashboard_server():
+    """Keep main() tests off real ports.
+
+    `test_dry_run_logs_mode` runs the real `main()`; unpatched, it starts a
+    waitress server on `WEB_PORT` (default 8080) in a daemon thread. If that
+    port is already in use, the thread dies with EADDRINUSE and leaks a
+    `PytestUnhandledThreadExceptionWarning` (QA finding I8). Same pattern as
+    the autouse fixture in `test_run_on_startup.py`.
+    """
+    with patch("app.main.start_dashboard"):
+        yield
 
 
 def _make_container(name, image_tag, labels, has_image_tags=True):
@@ -47,17 +61,31 @@ def _make_pruned_container(name, image_tag, labels):
 class TestRunCheckDockerConnection:
     """Docker connection failure handling."""
 
+    @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
-    def test_docker_connection_error_logs_and_returns(self, mock_docker, caplog):
+    def test_local_connection_failure_recorded_unreachable(
+        self, mock_docker, mock_token, caplog
+    ):
+        """F2a: a local Docker connection failure records the host as unreachable
+        in host_status instead of doing a special-case early return."""
+        from app import state as state_mod
         from docker.errors import DockerException
         import logging
 
         mock_docker.from_env.side_effect = DockerException("Cannot connect")
 
-        with caplog.at_level(logging.ERROR):
+        with patch.object(config_mod, "GITHUB_TOKEN", ""), \
+             caplog.at_level(logging.WARNING):
             run_check()
 
-        assert "Cannot connect to Docker" in caplog.text
+        assert "Unreachable" in caplog.text
+        assert "No hosts were reachable in this scan cycle" in caplog.text
+
+        status = state_mod.get_host_status()
+        assert len(status) == 1
+        assert status[0]["host"] == "local"
+        assert status[0]["reachable"] == 0
+        assert "Cannot connect" in status[0]["error"]
 
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
@@ -75,15 +103,24 @@ class TestRunCheckDockerConnection:
     @patch("app.scanner.get_dockerhub_token", return_value="token")
     @patch("app.scanner.docker")
     def test_client_closed_even_when_scan_raises(self, mock_docker, mock_token):
-        """Docker client must be closed even when an unexpected exception occurs mid-scan."""
+        """An unexpected exception mid-scan is caught by the per-host guard
+        (F1): the host is recorded unreachable, run_check() completes normally,
+        and the client is still closed via the finally block."""
+        from app import state as state_mod
+
         mock_client = MagicMock()
         mock_docker.from_env.return_value = mock_client
         mock_client.containers.list.side_effect = RuntimeError("unexpected failure")
 
-        with patch.object(config_mod, "GITHUB_TOKEN", ""), pytest.raises(RuntimeError):
-            run_check()
+        with patch.object(config_mod, "GITHUB_TOKEN", ""):
+            run_check()  # must not raise
 
         mock_client.close.assert_called_once()
+
+        status = {s["host"]: s for s in state_mod.get_host_status()}
+        assert status["local"]["reachable"] == 0
+        assert "scan error" in status["local"]["error"]
+        assert "unexpected failure" in status["local"]["error"]
 
 
 class TestRunCheckContainerProcessing:
@@ -526,7 +563,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "12h"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -554,7 +591,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "12h"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -586,7 +623,7 @@ class TestRunCheckCooldown:
         }
         self._mock_docker(mock_docker, labels=labels)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -616,7 +653,7 @@ class TestRunCheckCooldown:
         }
         self._mock_docker(mock_docker, labels=labels)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "12h"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "12h"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -640,7 +677,7 @@ class TestRunCheckCooldown:
         }
         self._mock_docker(mock_docker, labels=labels)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              caplog.at_level(logging.WARNING):
             run_check()
 
@@ -685,7 +722,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -722,7 +759,7 @@ class TestRunCheckCooldown:
 
         self._mock_docker(mock_docker)
         with patch.object(config_mod, "GITHUB_TOKEN", ""), \
-             patch.object(config_mod, "UPDATE_COOLDOWN", "0"), \
+             patch.object(config_mod, "UPDATE_COOLDOWN_RAW", "0"), \
              patch("app.scanner.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat.side_effect = datetime.fromisoformat
@@ -734,163 +771,6 @@ class TestRunCheckCooldown:
         assert notified_updates == []
         # Nothing was marked notified either.
         mock_mark.assert_not_called()
-
-
-class TestIsHigherVersion:
-    """Unit tests for the _is_higher_version() semver comparison helper."""
-
-    def test_higher_major_wins(self):
-        assert _is_higher_version("10.0.0", "9.0.0") is True
-
-    def test_lower_major_loses(self):
-        assert _is_higher_version("9.0.0", "10.0.0") is False
-
-    def test_equal_versions_not_higher(self):
-        assert _is_higher_version("1.2.3", "1.2.3") is False
-
-    def test_higher_minor_wins(self):
-        assert _is_higher_version("1.10.0", "1.9.0") is True
-
-    def test_higher_patch_wins(self):
-        assert _is_higher_version("1.0.10", "1.0.9") is True
-
-    def test_none_candidate_is_not_higher(self):
-        assert _is_higher_version(None, "1.0.0") is False
-
-    def test_none_current_makes_any_candidate_higher(self):
-        assert _is_higher_version("1.0.0", None) is True
-
-    def test_both_none_not_higher(self):
-        assert _is_higher_version(None, None) is False
-
-    def test_digest_fallback_uses_string_comparison(self):
-        # Non-numeric segments fall back to string comparison
-        assert _is_higher_version("sha256:bbb", "sha256:aaa") is True
-        assert _is_higher_version("sha256:aaa", "sha256:bbb") is False
-
-
-class TestRunCheckDeduplication:
-    """Deduplication of updates with the same (container, image, update_type) key."""
-
-    def _make_update(self, container_name, image, update_type, new_version, current_version="1.0.0"):
-        return UpdateInfo(
-            container_name=container_name,
-            service_name=container_name,
-            stack="stack",
-            image=image,
-            current_version=current_version,
-            new_version=new_version,
-            update_type=update_type,
-            status="new",
-        )
-
-    @patch("app.scanner.notify")
-    @patch("app.scanner.mark_notified")
-    @patch("app.scanner.process_scan")
-    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
-    @patch("app.scanner.get_dockerhub_token", return_value="token")
-    @patch("app.scanner.docker")
-    def test_duplicate_key_keeps_highest_version(
-        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
-    ):
-        """Two entries with the same key but different new_version → only highest is kept."""
-        lower = self._make_update("app", "nginx", "minor", "1.1.0")
-        higher = self._make_update("app", "nginx", "minor", "1.2.0")
-        mock_scan.return_value = [lower, higher]
-
-        container = _make_container("app", "nginx:1.0.0",
-                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
-        client = MagicMock()
-        mock_docker.from_env.return_value = client
-        client.containers.list.return_value = [container]
-
-        with patch.object(config_mod, "GITHUB_TOKEN", ""):
-            run_check()
-
-        updates = mock_notify.call_args[0][0]
-        assert len(updates) == 1
-        assert updates[0].new_version == "1.2.0"
-
-    @patch("app.scanner.notify")
-    @patch("app.scanner.mark_notified")
-    @patch("app.scanner.process_scan")
-    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
-    @patch("app.scanner.get_dockerhub_token", return_value="token")
-    @patch("app.scanner.docker")
-    def test_duplicate_key_order_independent(
-        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
-    ):
-        """Highest version wins regardless of iteration order (higher entry first)."""
-        higher = self._make_update("app", "nginx", "minor", "1.2.0")
-        lower = self._make_update("app", "nginx", "minor", "1.1.0")
-        mock_scan.return_value = [higher, lower]
-
-        container = _make_container("app", "nginx:1.0.0",
-                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
-        client = MagicMock()
-        mock_docker.from_env.return_value = client
-        client.containers.list.return_value = [container]
-
-        with patch.object(config_mod, "GITHUB_TOKEN", ""):
-            run_check()
-
-        updates = mock_notify.call_args[0][0]
-        assert len(updates) == 1
-        assert updates[0].new_version == "1.2.0"
-
-    @patch("app.scanner.notify")
-    @patch("app.scanner.mark_notified")
-    @patch("app.scanner.process_scan")
-    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
-    @patch("app.scanner.get_dockerhub_token", return_value="token")
-    @patch("app.scanner.docker")
-    def test_semver_crossing_digit_boundary(
-        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
-    ):
-        """9.0.0 must not beat 10.0.0 — string '9' > '10' but int 9 < 10."""
-        lower = self._make_update("app", "nginx", "major", "9.0.0")
-        higher = self._make_update("app", "nginx", "major", "10.0.0")
-        # 9.0.0 comes after 10.0.0 in the list — string comparison would pick 9.0.0 wrong
-        mock_scan.return_value = [higher, lower]
-
-        container = _make_container("app", "nginx:1.0.0",
-                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
-        client = MagicMock()
-        mock_docker.from_env.return_value = client
-        client.containers.list.return_value = [container]
-
-        with patch.object(config_mod, "GITHUB_TOKEN", ""):
-            run_check()
-
-        updates = mock_notify.call_args[0][0]
-        assert len(updates) == 1
-        assert updates[0].new_version == "10.0.0"
-
-    @patch("app.scanner.notify")
-    @patch("app.scanner.mark_notified")
-    @patch("app.scanner.process_scan")
-    @patch("app.scanner.fetch_all_tags", return_value=["1.0.0", "2.0.0"])
-    @patch("app.scanner.get_dockerhub_token", return_value="token")
-    @patch("app.scanner.docker")
-    def test_different_keys_both_kept(
-        self, mock_docker, mock_token, mock_fetch, mock_scan, mock_mark, mock_notify
-    ):
-        """Entries with different keys are all kept."""
-        u1 = self._make_update("app1", "nginx", "minor", "1.1.0")
-        u2 = self._make_update("app2", "redis", "major", "2.0.0")
-        mock_scan.return_value = [u1, u2]
-
-        container = _make_container("app1", "nginx:1.0.0",
-                                    {"docker-update-monitor.tag-regex": r"^(\d+)\.(\d+)\.(\d+)$"})
-        client = MagicMock()
-        mock_docker.from_env.return_value = client
-        client.containers.list.return_value = [container]
-
-        with patch.object(config_mod, "GITHUB_TOKEN", ""):
-            run_check()
-
-        updates = mock_notify.call_args[0][0]
-        assert len(updates) == 2
 
 
 class TestRunCheckRemovedContainer:

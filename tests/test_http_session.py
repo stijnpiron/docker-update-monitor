@@ -12,16 +12,11 @@ from app.notifications.webhook import notify
 from app.models import UpdateInfo
 
 
-class TestCreateHttpSession:
-    """Tests for create_http_session factory."""
-
-    def test_returns_session_instance(self):
-        session = http_mod.create_http_session()
-        assert isinstance(session, requests.Session)
+class TestHttpSessionConfig:
+    """Retry/pooling configuration of the module-level shared session."""
 
     def test_has_retry_adapter_for_https(self):
-        session = http_mod.create_http_session()
-        adapter = session.get_adapter("https://example.com")
+        adapter = http_mod.http_session.get_adapter("https://example.com")
         assert adapter.max_retries.total == 3
         assert 429 in adapter.max_retries.status_forcelist
         assert 500 in adapter.max_retries.status_forcelist
@@ -30,23 +25,19 @@ class TestCreateHttpSession:
         assert 504 in adapter.max_retries.status_forcelist
 
     def test_has_retry_adapter_for_http(self):
-        session = http_mod.create_http_session()
-        adapter = session.get_adapter("http://example.com")
+        adapter = http_mod.http_session.get_adapter("http://example.com")
         assert adapter.max_retries.total == 3
 
     def test_respects_retry_after_header(self):
-        session = http_mod.create_http_session()
-        adapter = session.get_adapter("https://example.com")
+        adapter = http_mod.http_session.get_adapter("https://example.com")
         assert adapter.max_retries.respect_retry_after_header is True
 
     def test_backoff_factor_is_set(self):
-        session = http_mod.create_http_session()
-        adapter = session.get_adapter("https://example.com")
+        adapter = http_mod.http_session.get_adapter("https://example.com")
         assert adapter.max_retries.backoff_factor == 1
 
     def test_pool_connections_configured(self):
-        session = http_mod.create_http_session()
-        adapter = session.get_adapter("https://example.com")
+        adapter = http_mod.http_session.get_adapter("https://example.com")
         assert adapter._pool_connections == 10
         assert adapter._pool_maxsize == 10
 
@@ -144,9 +135,7 @@ class TestRetryBehavior:
 
     def test_retry_adapter_status_forcelist_includes_429_and_5xx(self):
         """Directly verify the retry configuration covers the required status codes."""
-        session = http_mod.create_http_session()
-        adapter = session.get_adapter("https://example.com")
-        retry = adapter.max_retries
+        retry = http_mod.http_session.get_adapter("https://example.com").max_retries
         assert isinstance(retry, Retry)
         assert 429 in retry.status_forcelist
         assert 503 in retry.status_forcelist
