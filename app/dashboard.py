@@ -46,11 +46,6 @@ def _host_badge_class(host: str) -> str:
     return f"host-badge-{digest[0] % 12}"
 
 
-def _host_sort_key(host: str | None) -> str:
-    """Missing/empty host sorts as ``local`` (the pre-feature default)."""
-    return host or "local"
-
-
 def create_app() -> Flask:
     """Create and configure the Flask application."""
     application = Flask(__name__, template_folder="templates")
@@ -64,7 +59,8 @@ def create_app() -> Flask:
             u["first_seen_at_display"] = _format_datetime(u.get("first_seen_at"))
 
         # Default sort: host, stack, container name (multi-host support, task 06).
-        updates.sort(key=lambda u: (_host_sort_key(u.get("host")), u.get("stack") or "", u.get("container_name") or ""))
+        # Missing/empty host sorts as "local" (the pre-feature default).
+        updates.sort(key=lambda u: (u.get("host") or "local", u.get("stack") or "", u.get("container_name") or ""))
 
         with _state_lock:
             last_check = _state.get("last_check")
@@ -134,8 +130,8 @@ def create_app() -> Flask:
     @application.route("/api/updates")
     def api_updates():
         # Sort mirrors the page default (host, stack, container_name) per task 06.
-        updates = get_all_updates()
-        updates.sort(key=lambda u: (_host_sort_key(u.get("host")), u.get("stack") or "", u.get("container_name") or ""))
+        updates = [u for u in get_all_updates() if u["status"] != "resolved"]
+        updates.sort(key=lambda u: (u.get("host") or "local", u.get("stack") or "", u.get("container_name") or ""))
         return jsonify(updates)
 
     @application.route("/api/host-status")
