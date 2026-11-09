@@ -359,9 +359,9 @@ click==8.5.0 \
     --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 \
     --hash=sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34
     # via flask
-croniter==6.2.4 \
-    --hash=sha256:8ef3d544107a5c05a150a2d78f8bf5a8eb9c5c4d93405a736b824109574e3f4d \
-    --hash=sha256:fc124f751b1b04805c2a04b061898b436b45ab2320b045e1e052ea895de65189
+croniter==7.0.0 \
+    --hash=sha256:92090bce3cef195a037a46b78430c4cdd6250e90671d9d7dcd9e486147daaca4 \
+    --hash=sha256:a0b2568303c774f6a4ea2d4ce2e72b1ee911029c7070d64a1befe05cdb107f5a
     # via -r requirements.in
 cryptography==50.0.2 \
     --hash=sha256:0ddc924c04591c2811ca024d62ecad4f7f6f08af8939c211438f48a16bd23602 \
