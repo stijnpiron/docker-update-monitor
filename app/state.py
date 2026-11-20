@@ -137,7 +137,9 @@ def process_scan(
     pending update is no longer relevant and must not keep showing up in the overview.
 
     Entries for containers that still exist but are *not* in *current_versions* are
-    left untouched (the container may have been temporarily unreachable).
+    left untouched (the container may have been temporarily unreachable).  A row
+    whose container *was* scanned but under a different image is deleted — the
+    container swapped images, so the old image's pending update is obsolete.
     """
     if scan_time is None:
         scan_time = datetime.now(timezone.utc)
@@ -171,6 +173,9 @@ def process_scan(
             for u in updates
         }
 
+        # Container names successfully scanned this cycle (any image).
+        scanned_containers = {name for name, _ in current_versions}        
+
         active_rows = conn.execute(
             "SELECT * FROM updates WHERE resolved_at IS NULL AND host = ?",
             (host,),
@@ -193,7 +198,12 @@ def process_scan(
 
             cv_key = (row["container_name"], row["image"])
             if cv_key not in current_versions:
-                continue  # container not scanned this cycle — leave entry alone
+                if row["container_name"] not in scanned_containers:
+                    continue  # container not scanned this cycle — leave entry alone
+                # Container was scanned under a different image: the old image's
+                # pending update is obsolete (container swapped images).
+                conn.execute("DELETE FROM updates WHERE id = ?", (row["id"],))
+                continue
 
             # Container was scanned — check if it was updated
             current_tag, pattern = current_versions[cv_key]

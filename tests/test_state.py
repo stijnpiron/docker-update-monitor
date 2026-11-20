@@ -318,6 +318,19 @@ class TestRemovedContainer:
 
         resolved = [r for r in result if r.status == "resolved"]
         assert len(resolved) == 1
+
+    def test_container_swapped_image_deletes_stale_entry(self):
+        """Container scanned under a new image → old image's pending row is deleted."""
+        u = _make_update()
+        t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        state.process_scan([u], scan_time=t1)
+        # Same container now runs a different image, no update there.
+        cv = {("web", "redis"): ("7.0", _PAT)}
+        state.process_scan([], scan_time=t2, current_versions=cv)
+
+        assert state.get_active_updates() == []        
         assert len(state.get_active_updates()) == 0
 
 
