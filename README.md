@@ -108,6 +108,17 @@ services:
       docker-update-monitor.mode: "digest"
       docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
 
+  # Locally built image tracked via its upstream base: image-override points the
+  # check at the upstream reference (must include a tag). Semver (tag-regex) only —
+  # digest modes would compare the locally built image's own digest. Bump the
+  # override's tag whenever you rebuild against a newer upstream version.
+  bazarr:
+    image: ghcr.io/you/bazarr-custom:1.6.2-1
+    build: ./bazarr-custom
+    labels:
+      docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
+      docker-update-monitor.image-override: "lscr.io/linuxserver/bazarr:1.6.2"
+
   # Containers WITHOUT any monitoring label are silently ignored
   redis:
     image: redis:7
@@ -123,6 +134,32 @@ services:
 | `mode: digest` + `tag-regex` | Any                | Explicit digest (semver bypassed; regex used only for version resolution) |
 
 > **Explicit vs implicit digest:** The explicit `mode: digest` label compares the running image's local digest against the registry on every scan, including the first. The implicit fallback (tag doesn't match `tag-regex`) compares the registry digest across two consecutive scans and is silent on the first. Use `mode: digest` when your container exclusively uses rolling tags and you want immediate detection.
+
+### Locally built images (`image-override`)
+
+A locally built image (e.g. a patched fork) has no registry presence of its own, so a
+registry lookup for it finds nothing. Add the `docker-update-monitor.image-override`
+label with the **upstream reference this build derives from — including the tag you
+currently track**:
+
+```yaml
+labels:
+  docker-update-monitor.tag-regex: "^(\\d+)\\.(\\d+)\\.(\\d+)$"
+  docker-update-monitor.image-override: "lscr.io/linuxserver/bazarr:1.6.2"
+```
+
+The check then behaves as if the container ran `lscr.io/linuxserver/bazarr:1.6.2`:
+the tag-regex applies to the override tag, and updates are reported against upstream
+tags. The payload still carries your container name and stack, with the override
+image in the `image` field. Rules:
+
+- The override **must include a tag** — a tag-less value raises a scan warning and
+  the container is skipped.
+- Only **semver (tag-regex) detection** is supported. Combining the override with
+  `mode: digest` is rejected with a warning: the local image's RepoDigests belong to
+  your build, not to the upstream tag, so a digest comparison would be meaningless.
+- Bump the override's tag in the same change that rebuilds against a newer upstream
+  version, otherwise the monitor keeps comparing against the old base.
 
 ### Regex tips
 

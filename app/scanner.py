@@ -83,6 +83,24 @@ def _resolve_digest_to_tag(
     return None
 
 
+def _split_image_ref(image_ref: str) -> tuple[str, str]:
+    """Split an image reference into ``(name, tag)``.
+
+    Handles registry prefixes (``registry.example.com:5000/ns/image:tag``) and
+    digest suffixes (``image:1.0.0@sha256:...``). A tag-less ref yields ``latest``.
+    """
+    # Strip digest suffix if present
+    if "@" in image_ref:
+        image_ref = image_ref.split("@")[0]
+
+    if ":" in image_ref.split("/")[-1]:
+        image_name, current_tag = image_ref.rsplit(":", 1)
+    else:
+        image_name, current_tag = image_ref, "latest"
+
+    return image_name, current_tag
+
+
 # Socket timeout (seconds) for remote (SSH) Docker clients. Bounds I/O on the
 # *established* session only: docker-py shells out to the system `ssh` binary
 # with a fixed argv (no `-o ConnectTimeout` hook), so the initial TCP connect /
@@ -247,17 +265,7 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
             continue
 
         # Split into name + tag
-        # Handle registry prefixes: registry.example.com:5000/ns/image:tag
-        # Strategy: split on the last colon that follows a slash (or the only colon if no slashes after it)
-
-        # Strip digest suffix if present
-        if "@" in image_ref:
-            image_ref = image_ref.split("@")[0]
-
-        if ":" in image_ref.split("/")[-1]:
-            image_name, current_tag = image_ref.rsplit(":", 1)
-        else:
-            image_name, current_tag = image_ref, "latest"
+        image_name, current_tag = _split_image_ref(image_ref)
 
         # Detect stack and service (Compose sets these automatically)
         stack = (
@@ -266,6 +274,42 @@ def _scan_host(host: str, client, token: str | None) -> _HostScanResult:
             or "standalone"
         )
         service_name = labels.get("com.docker.compose.service", "")
+
+        # Image override: a container whose image is built locally (e.g. a patched
+        # fork) has no registry presence of its own. The
+        # `<PREFIX>.image-override` label points the check at the upstream image
+        # this build is based on, as a full reference including the tag currently
+        # tracked (e.g. `lscr.io/linuxserver/bazarr:1.6.2`). All detection modes
+        # then compare against that upstream reference instead. Digest modes are
+        # not useful here: the local image's RepoDigests belong to the *build*,
+        # not to the upstream tag, so only semver (tag-regex) detection makes
+        # sense — a combined `mode: digest` label is rejected below.
+        override_ref = labels.get(f"{_config.LABEL_PREFIX}.image-override", "").strip()
+        if override_ref:
+            override_name, override_tag = _split_image_ref(override_ref)
+            if override_tag == "latest" and ":" not in override_ref.split("/")[-1]:
+                msg = (f"Invalid image-override '{override_ref}' — must include a tag "
+                       f"(e.g. '{override_name}:1.2.3')")
+                _config.log.warning(f"  [{container_name}] {msg} — skipping")
+                all_warnings.append(ScanWarning(
+                    container_name=container_name, image=override_name,
+                    level="warning", message=msg, host=host,
+                ))
+                continue
+            if mode == "digest":
+                msg = ("image-override only supports semver (tag-regex) detection — "
+                       "digest modes would compare the locally built image's digest")
+                _config.log.warning(f"  [{container_name}] {msg} — skipping")
+                all_warnings.append(ScanWarning(
+                    container_name=container_name, image=override_name,
+                    level="warning", message=msg, host=host,
+                ))
+                continue
+            _config.log.info(
+                f"  [{container_name}]  image={image_name}:{current_tag}"
+                f"  → upstream {override_name}:{override_tag}  stack={stack}"
+            )
+            image_name, current_tag = override_name, override_tag
 
         _config.log.info(f"  [{container_name}]  image={image_name}:{current_tag}  stack={stack}")
 
